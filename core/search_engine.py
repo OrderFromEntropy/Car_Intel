@@ -1,14 +1,11 @@
-"""DuckDuckGo/DDGS search aggregator for car listings.
+"""Search aggregator: direct scrapers first, DDGS as supplement.
+
+Direct scrapers (cars.com HTML, AutoTrader JSON API, Craigslist HTML) give
+individual listing URLs and structured data.  DDG/Bing is used to top up
+the result set if direct scrapers return fewer than MIN_DIRECT results.
 
 NOTE: The duckduckgo_search package was renamed to ddgs.
 Run: pip install ddgs
-
-Query strategy (broad → specific to maximise results from Bing):
-  Tier 1 — just make+model, no trim, no year → highest hit rate
-  Tier 2 — add year anchor
-  Tier 3 — add site name as keyword
-  Tier 4 — add full trim + zip
-  Tier 5 — site: operator (sometimes works)
 """
 
 from __future__ import annotations
@@ -25,6 +22,7 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS  # type: ignore
 
+from core.direct_search import run_direct_search
 from core.models import CarListing, CarProfile
 
 log = logging.getLogger(__name__)
@@ -44,14 +42,34 @@ _LISTING_DOMAINS = {
 
 RESULTS_PER_QUERY = 15
 MAX_TOTAL = 50
+MIN_DIRECT = 10   # if direct scrapers get this many, skip most DDG queries
 _QUERY_DELAY = 1.0
 _ERROR_DELAY = 2.0
+
+# Patterns that identify individual listings vs search/category pages
+_INDIVIDUAL_LISTING_PATTERNS = [
+    "/vehicledetail/",        # cars.com individual listing
+    "vehicledetails.xhtml",   # autotrader individual listing
+    "/vehicle/",
+    "/listing/",
+    "/cars-for-sale/details",
+    "/used-",                 # carfax individual
+    r"\d{7,}",                # 7+ digit ID typically means individual listing
+]
+
+
+def _looks_like_individual_listing(url: str) -> bool:
+    import re
+    for pat in _INDIVIDUAL_LISTING_PATTERNS:
+        if re.search(pat, url):
+            return True
+    return False
 
 
 def _build_queries(profile: CarProfile) -> list[str]:
     make = (profile.make or "").strip()
     model = (profile.model or "").strip()
-    base = f"{make} {model}".strip()   # e.g. "Toyota Tundra"
+    base = f"{make} {model}".strip()
 
     trim = (profile.trim or "").strip()
     if trim.lower() in ("", "any", "open", "none"):
@@ -72,29 +90,29 @@ def _build_queries(profile: CarProfile) -> list[str]:
 
     queries: list[str] = []
 
-    # ── Tier 1: broadest — make+model only ───────────────────────────────
-    queries.append(q(base, "for sale"))                   # "Toyota Tundra for sale"
-    queries.append(q(base, "used"))                        # "Toyota Tundra used"
+    # Tier 1: broadest — make+model only
+    queries.append(q(base, "for sale"))
+    queries.append(q(base, "used"))
     if zip_code:
-        queries.append(q(base, "for sale", zip_code))     # + zip
+        queries.append(q(base, "for sale", zip_code))
 
-    # ── Tier 2: add year ─────────────────────────────────────────────────
+    # Tier 2: add year
     if year_anchor:
         queries.append(q(year_anchor, base, "for sale"))
         if zip_code:
             queries.append(q(year_anchor, base, zip_code))
 
-    # ── Tier 3: site name as keyword (with base only, no trim) ───────────
+    # Tier 3: site name as keyword (with base only, no trim)
     for site in TARGET_SITES:
         queries.append(q(year_anchor, base, site))
 
-    # ── Tier 4: add trim (more specific — after broad passes) ────────────
+    # Tier 4: add trim
     if trim:
         queries.append(q(year_anchor, base, trim, "for sale"))
         for site in TARGET_SITES:
             queries.append(q(year_anchor, base, trim, site))
 
-    # ── Tier 5: site: operator ───────────────────────────────────────────
+    # Tier 5: site: operator
     for site in TARGET_SITES:
         queries.append(q(f"site:{site}", year_anchor, base, zip_code))
 
@@ -115,41 +133,71 @@ async def run_search(
     profile: CarProfile,
     status_cb: Callable[[str], None] | None = None,
 ) -> list[CarListing]:
-    queries = _build_queries(profile)
-    log.info("Search: %d queries for %r", len(queries), profile.to_search_summary())
-    all_listings: list[CarListing] = []
+    # ── Phase 1: direct scrapers ──────────────────────────────────────────
+    if status_cb:
+        status_cb("Fetching direct listings from cars.com, AutoTrader, Craigslist…")
+    try:
+        direct_listings = await run_direct_search(profile, status_cb=status_cb)
+    except Exception as exc:
+        log.warning("Direct search failed entirely: %s", exc)
+        direct_listings = []
 
-    for i, query in enumerate(queries):
-        n_unique = len(_dedupe(all_listings))
-        msg = f"Search {i + 1}/{len(queries)} — {n_unique} found so far…"
-        log.info(msg)
-        if status_cb:
-            status_cb(msg)
+    n_direct = len(direct_listings)
+    log.info("Direct scrapers: %d listings", n_direct)
+    if status_cb:
+        status_cb(f"Direct search: {n_direct} individual listings found.")
 
-        try:
-            raw = await asyncio.to_thread(_ddg_search, query)
-            batch = [CarListing.from_ddg_result(r) for r in raw]
-            all_listings.extend(batch)
-            log.info("  %r → %d results", query[:65], len(batch))
-        except Exception as exc:
-            log.warning("  Query %d failed: %s", i + 1, exc)
-            await asyncio.sleep(_ERROR_DELAY)
-            continue
+    all_listings = list(direct_listings)
 
-        if len(_dedupe(all_listings)) >= MAX_TOTAL:
-            log.info("Reached %d unique — stopping early", MAX_TOTAL)
-            break
+    # ── Phase 2: DDG supplement if direct search was thin ────────────────
+    if n_direct < MIN_DIRECT:
+        queries = _build_queries(profile)
+        log.info("Direct results thin (%d) — running %d DDG queries", n_direct, len(queries))
 
-        await asyncio.sleep(_QUERY_DELAY)
+        for i, query in enumerate(queries):
+            n_unique = len(_dedupe(all_listings))
+            msg = f"DDG search {i + 1}/{len(queries)} — {n_unique} total so far…"
+            log.info(msg)
+            if status_cb:
+                status_cb(msg)
+
+            try:
+                raw = await asyncio.to_thread(_ddg_search, query)
+                # Only keep results that look like individual listing URLs
+                batch = [
+                    CarListing.from_ddg_result(r)
+                    for r in raw
+                    if _looks_like_individual_listing(r.get("href", "") or r.get("url", ""))
+                ]
+                if not batch:
+                    # Fall back to all DDG results if none look like individual listings
+                    batch = [CarListing.from_ddg_result(r) for r in raw]
+                all_listings.extend(batch)
+                log.info("  %r → %d results (%d individual)", query[:65], len(raw), len(batch))
+            except Exception as exc:
+                log.warning("  DDG query %d failed: %s", i + 1, exc)
+                await asyncio.sleep(_ERROR_DELAY)
+                continue
+
+            if len(_dedupe(all_listings)) >= MAX_TOTAL:
+                log.info("Reached %d unique — stopping early", MAX_TOTAL)
+                break
+
+            await asyncio.sleep(_QUERY_DELAY)
 
     unique = _dedupe(all_listings)
-    log.info("Search complete: %d unique listings", len(unique))
-    return unique[:MAX_TOTAL]
+
+    # Sort: individual listings first (cars.com/autotrader direct results), then DDG
+    individual = [l for l in unique if l.source in ("cars.com", "autotrader.com", "craigslist")]
+    supplement = [l for l in unique if l not in individual]
+    ordered = individual + supplement
+
+    log.info("Search complete: %d unique (%d direct, %d DDG)", len(ordered), len(individual), len(supplement))
+    return ordered[:MAX_TOTAL]
 
 
 def _ddg_search(query: str) -> list[dict]:
     """Single DDG/DDGS text search, two attempts for version compatibility."""
-    # Attempt 1: no extra kwargs (broadest compatibility)
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=RESULTS_PER_QUERY))
@@ -158,7 +206,6 @@ def _ddg_search(query: str) -> list[dict]:
     except Exception as exc:
         log.debug("DDGS attempt 1 failed for %r: %s", query[:60], exc)
 
-    # Attempt 2: explicit safesearch
     try:
         with DDGS() as ddgs:
             return list(ddgs.text(query, max_results=RESULTS_PER_QUERY, safesearch="off")) or []
