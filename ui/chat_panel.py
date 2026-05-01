@@ -1,20 +1,16 @@
-"""Chat side-panel: streaming Gemma interview with async token delivery."""
+"""Chat side-panel: streaming Gemma interview with profile-aware logic."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable
 
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QTextCursor
+from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
-    QSizePolicy,
     QTextBrowser,
     QTextEdit,
     QVBoxLayout,
@@ -28,6 +24,7 @@ from core.interview import (
     stream_reply,
 )
 from core.models import CarProfile
+from core.profile_manager import UserProfile
 
 log = logging.getLogger(__name__)
 
@@ -40,17 +37,29 @@ _AI_BUBBLE_CSS = (
     "border-radius: 4px; padding: 8px 10px; margin: 4px 0;"
 )
 
+_FRAMEWORK_BADGE_STYLES = {
+    "tundra": (
+        "color: #ffd700; background: #ffd70015; border: 1px solid #ffd70040; "
+        "border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 600;"
+    ),
+    "generic": (
+        "color: #8b949e; background: #8b949e15; border: 1px solid #8b949e40; "
+        "border-radius: 4px; padding: 2px 8px; font-size: 10px;"
+    ),
+}
+
 
 class StreamWorker(QObject):
-    """Runs the streaming LLM call in a thread, emitting tokens as they arrive."""
+    """Runs the streaming LLM call in a QThread."""
 
     token_received = pyqtSignal(str)
-    reply_complete = pyqtSignal(str)  # full reply text
+    reply_complete = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, history: list[dict]):
+    def __init__(self, history: list[dict], user_profile: UserProfile | None):
         super().__init__()
         self.history = list(history)
+        self.user_profile = user_profile
         self._thread = QThread()
         self.moveToThread(self._thread)
         self._thread.started.connect(self._run)
@@ -72,26 +81,42 @@ class StreamWorker(QObject):
 
     async def _stream(self) -> str:
         collected = []
-        async for token in stream_reply(self.history):
+        async for token in stream_reply(self.history, self.user_profile):
             collected.append(token)
             self.token_received.emit(token)
         return "".join(collected)
 
 
 class ChatPanel(QWidget):
-    """Side panel housing the interview chat UI."""
+    """Side panel — interview chat tied to the active UserProfile."""
 
-    profile_ready = pyqtSignal(object)   # emits CarProfile when interview complete
-    search_requested = pyqtSignal(object)  # emits CarProfile when user wants to search
+    search_requested = pyqtSignal(object, object)  # (CarProfile, UserProfile)
 
-    def __init__(self, parent=None):
+    def __init__(self, user_profile: UserProfile | None = None, parent=None):
         super().__init__(parent)
+        self._user_profile: UserProfile | None = user_profile
         self._history: list[dict] = []
         self._stream_worker: StreamWorker | None = None
-        self._current_profile: CarProfile | None = None
+        self._current_car_profile: CarProfile | None = None
         self._ai_reply_buffer = ""
         self._build_ui()
         self._start_interview()
+
+    # ── Public API ───────────────────────────────────────────────────────
+
+    def load_profile(self, user_profile: UserProfile) -> None:
+        """Switch to a different user profile and restart the interview."""
+        self._user_profile = user_profile
+        self._history.clear()
+        self._current_car_profile = None
+        self._chat_view.clear()
+        self._search_bar.hide()
+        self._input.setEnabled(True)
+        self._send_btn.setEnabled(True)
+        self._update_framework_badge()
+        self._start_interview()
+
+    # ── UI construction ──────────────────────────────────────────────────
 
     def _build_ui(self):
         self.setObjectName("chat_panel")
@@ -108,17 +133,23 @@ class ChatPanel(QWidget):
         header.setFixedHeight(52)
         h_layout = QHBoxLayout(header)
         h_layout.setContentsMargins(16, 0, 16, 0)
+        h_layout.setSpacing(8)
 
-        title = QLabel("CarIntel Assistant")
+        title = QLabel("Assistant")
         title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: 700;")
         h_layout.addWidget(title)
+
+        self._framework_badge = QLabel("")
+        self._update_framework_badge()
+        h_layout.addWidget(self._framework_badge)
+
         h_layout.addStretch()
 
-        self._reset_btn = QPushButton("Reset")
-        self._reset_btn.setFixedSize(60, 28)
-        self._reset_btn.setToolTip("Start a new interview")
-        self._reset_btn.clicked.connect(self._reset_interview)
-        h_layout.addWidget(self._reset_btn)
+        reset_btn = QPushButton("Reset")
+        reset_btn.setFixedSize(60, 28)
+        reset_btn.setToolTip("Restart the interview")
+        reset_btn.clicked.connect(self._reset_interview)
+        h_layout.addWidget(reset_btn)
 
         root.addWidget(header)
 
@@ -135,7 +166,7 @@ class ChatPanel(QWidget):
         self._typing_label.hide()
         root.addWidget(self._typing_label)
 
-        # Search trigger bar (shown after profile is ready)
+        # Search trigger bar
         self._search_bar = QWidget()
         self._search_bar.setStyleSheet("background: #161b22; border-top: 1px solid #21262d;")
         sb_layout = QHBoxLayout(self._search_bar)
@@ -176,23 +207,33 @@ class ChatPanel(QWidget):
 
         root.addWidget(input_container)
 
+    def _update_framework_badge(self):
+        if not self._user_profile:
+            self._framework_badge.setText("")
+            return
+        fw = self._user_profile.framework
+        label_map = {"tundra": "Tundra Framework", "generic": "Generic"}
+        style = _FRAMEWORK_BADGE_STYLES.get(fw, _FRAMEWORK_BADGE_STYLES["generic"])
+        self._framework_badge.setText(label_map.get(fw, fw))
+        self._framework_badge.setStyleSheet(style)
+
     # ── Interview lifecycle ──────────────────────────────────────────────
 
     def _start_interview(self):
-        greeting = initial_message()
+        greeting = initial_message(self._user_profile)
         self._append_ai_message(greeting)
         self._history.append({"role": "assistant", "content": greeting})
 
     def _reset_interview(self):
         self._history.clear()
-        self._current_profile = None
+        self._current_car_profile = None
         self._chat_view.clear()
         self._search_bar.hide()
         self._input.setEnabled(True)
         self._send_btn.setEnabled(True)
         self._start_interview()
 
-    # ── Sending / receiving ──────────────────────────────────────────────
+    # ── Send / receive ───────────────────────────────────────────────────
 
     def _on_send(self):
         text = self._input.toPlainText().strip()
@@ -207,12 +248,10 @@ class ChatPanel(QWidget):
         self._start_stream()
 
     def _start_stream(self):
-        worker = StreamWorker(self._history)
+        worker = StreamWorker(self._history, self._user_profile)
         self._stream_worker = worker
-        # Reserve space for streaming AI reply
         self._ai_reply_buffer = ""
         self._append_ai_message_start()
-
         worker.token_received.connect(self._on_token)
         worker.reply_complete.connect(self._on_reply_complete)
         worker.error_occurred.connect(self._on_stream_error)
@@ -220,7 +259,6 @@ class ChatPanel(QWidget):
 
     def _on_token(self, token: str):
         self._ai_reply_buffer += token
-        # Update the last AI bubble in the chat view
         self._update_streaming_bubble(self._ai_reply_buffer)
 
     def _on_reply_complete(self, full_reply: str):
@@ -229,19 +267,19 @@ class ChatPanel(QWidget):
         self._send_btn.setEnabled(True)
         self._input.setEnabled(True)
 
-        # Strip PROFILE_READY block from display
         display_reply = full_reply
         if PROFILE_READY_MARKER in full_reply:
             display_reply = full_reply.split(PROFILE_READY_MARKER)[0].strip()
-            # Parse profile asynchronously
             loop = asyncio.new_event_loop()
             try:
-                profile = loop.run_until_complete(extract_profile(full_reply))
+                car_profile = loop.run_until_complete(
+                    extract_profile(full_reply, self._user_profile)
+                )
             finally:
                 loop.close()
-            if profile:
-                self._current_profile = profile
-                self._show_search_ready(profile)
+            if car_profile:
+                self._current_car_profile = car_profile
+                self._show_search_ready(car_profile)
 
         self._finalize_streaming_bubble(display_reply)
         self._history.append({"role": "assistant", "content": full_reply})
@@ -251,20 +289,22 @@ class ChatPanel(QWidget):
         self._stream_worker = None
         self._send_btn.setEnabled(True)
         self._input.setEnabled(True)
-        self._append_ai_message(f"⚠ Error connecting to AI: {error}\n\nMake sure Ollama is running.")
+        self._append_ai_message(
+            f"⚠ Error connecting to AI: {error}\n\nMake sure Ollama is running."
+        )
 
     def _on_search_clicked(self):
-        if self._current_profile:
-            self.search_requested.emit(self._current_profile)
+        if self._current_car_profile and self._user_profile:
+            self.search_requested.emit(self._current_car_profile, self._user_profile)
 
-    def _show_search_ready(self, profile: CarProfile):
-        summary = profile.to_search_summary()
+    def _show_search_ready(self, car_profile: CarProfile):
+        summary = car_profile.to_search_summary()
         self._profile_summary.setText(f"Ready: {summary}")
         self._search_bar.show()
         confirmation = (
-            f"Great! I have everything I need. Here's your search profile:\n\n"
+            f"Got it. Here's your search profile:\n\n"
             f"**{summary}**\n\n"
-            f"Click **Search →** below to find listings, or tell me if you'd like to adjust anything."
+            f"Click **Search →** to find listings, or adjust anything here first."
         )
         self._append_ai_message(confirmation)
         self._history.append({"role": "assistant", "content": confirmation})
@@ -282,7 +322,6 @@ class ChatPanel(QWidget):
         self._scroll_to_bottom()
 
     def _append_ai_message_start(self):
-        """Insert an empty AI bubble that will be filled by streaming tokens."""
         html = (
             f'<div id="stream_bubble" style="{_AI_BUBBLE_CSS}">'
             f'<span style="color:#3fb950;font-weight:700;font-size:11px;">CARINTEL AI</span><br>'
@@ -293,22 +332,12 @@ class ChatPanel(QWidget):
         self._scroll_to_bottom()
 
     def _update_streaming_bubble(self, full_text: str):
-        # QTextBrowser doesn't support live DOM manipulation easily,
-        # so we rebuild the last block.
         self._replace_last_ai_bubble(full_text)
 
     def _finalize_streaming_bubble(self, text: str):
         self._replace_last_ai_bubble(text)
 
     def _replace_last_ai_bubble(self, text: str):
-        # We track the full document and re-render the last AI block
-        # by appending to the cursor position of our placeholder marker.
-        # Simplest approach: store cursor position and use setHtml for last block.
-        doc = self._chat_view.document()
-        cursor = QTextCursor(doc)
-        cursor.movePosition(QTextCursor.End)
-
-        # Find and replace the streaming placeholder block
         full_html = self._chat_view.toHtml()
         marker = '<span id="stream_content"'
         if marker in full_html:
@@ -319,7 +348,6 @@ class ChatPanel(QWidget):
                 f'<span style="color:#e6edf3;">{rendered}</span>'
                 f"</div><br>"
             )
-            # Replace the placeholder section with the updated content
             start = full_html.rfind(f'<div style="{_AI_BUBBLE_CSS}">')
             if start != -1:
                 end = full_html.find("</div><br>", start) + len("</div><br>")
@@ -339,22 +367,21 @@ class ChatPanel(QWidget):
         self._scroll_to_bottom()
 
     def _scroll_to_bottom(self):
-        scrollbar = self._chat_view.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-
-    # ── Event filter for Enter-to-send ───────────────────────────────────
+        sb = self._chat_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
         from PyQt5.QtGui import QKeyEvent
         if obj is self._input and event.type() == QEvent.KeyPress:
             if isinstance(event, QKeyEvent):
-                from PyQt5.QtCore import Qt
                 if event.key() == Qt.Key_Return and not (event.modifiers() & Qt.ShiftModifier):
                     self._on_send()
                     return True
         return super().eventFilter(obj, event)
 
+
+# ── Text helpers ──────────────────────────────────────────────────────────────
 
 def _escape(text: str) -> str:
     return (
@@ -366,20 +393,16 @@ def _escape(text: str) -> str:
 
 
 def _render_markdown_lite(text: str) -> str:
-    """Very light markdown → HTML for bold and line breaks."""
     import re
-    # Bold
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    # Escape remaining HTML-sensitive chars (but preserve <b> tags)
-    # We'll do a simple approach: escape first, then unescape bold tags
     escaped = (
         text.replace("&", "&amp;")
-        .replace("<b>", "\x00BOLD_OPEN\x00")
-        .replace("</b>", "\x00BOLD_CLOSE\x00")
+        .replace("<b>", "\x00B\x00")
+        .replace("</b>", "\x00/B\x00")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-        .replace("\x00BOLD_OPEN\x00", "<b>")
-        .replace("\x00BOLD_CLOSE\x00", "</b>")
+        .replace("\x00B\x00", "<b>")
+        .replace("\x00/B\x00", "</b>")
         .replace("\n", "<br>")
     )
     return escaped
