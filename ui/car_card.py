@@ -98,10 +98,60 @@ class CarCard(QFrame):
         meta_row.addStretch()
         root.addLayout(meta_row)
 
+        # ── Tier reasoning ────────────────────────────────────────────
+        if self.listing.tier_reasoning:
+            reasoning = QLabel(f"⟩ {self.listing.tier_reasoning}")
+            reasoning.setStyleSheet(
+                f"color: {tier_color}99; font-size: 11px; font-style: italic;"
+            )
+            reasoning.setWordWrap(True)
+            root.addWidget(reasoning)
+
+        # ── Disqualifiers (red) ───────────────────────────────────────
+        for disq in self.listing.disqualifiers:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            icon = QLabel("✕")
+            icon.setStyleSheet("color: #f85149; font-size: 11px; font-weight: 700;")
+            icon.setFixedWidth(14)
+            row.addWidget(icon)
+            text = QLabel(disq)
+            text.setStyleSheet(
+                "color: #f85149; font-size: 11px; "
+                "background: #f8514912; border-radius: 3px; padding: 1px 4px;"
+            )
+            text.setWordWrap(True)
+            row.addWidget(text, 1)
+            root.addLayout(row)
+
+        # ── Flags (amber) ─────────────────────────────────────────────
+        for flag in self.listing.flags:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            icon = QLabel("⚑")
+            icon.setStyleSheet("color: #d29922; font-size: 11px;")
+            icon.setFixedWidth(14)
+            row.addWidget(icon)
+            text = QLabel(flag)
+            text.setStyleSheet(
+                "color: #d29922; font-size: 11px; "
+                "background: #d2992212; border-radius: 3px; padding: 1px 4px;"
+            )
+            text.setWordWrap(True)
+            row.addWidget(text, 1)
+            root.addLayout(row)
+
+        # ── Divider before summary if we had disq/flags ───────────────
+        if self.listing.disqualifiers or self.listing.flags or self.listing.tier_reasoning:
+            divider = QFrame()
+            divider.setFrameShape(QFrame.HLine)
+            divider.setStyleSheet("color: #21262d;")
+            root.addWidget(divider)
+
         # ── Summary / Snippet ─────────────────────────────────────────
         summary_text = self.listing.summary or self.listing.snippet
         if summary_text:
-            summary = QLabel(summary_text[:350])
+            summary = QLabel(summary_text[:400])
             summary.setStyleSheet("color: #8b949e; font-size: 12px; line-height: 1.5;")
             summary.setWordWrap(True)
             root.addWidget(summary)

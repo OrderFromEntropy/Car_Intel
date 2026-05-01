@@ -74,6 +74,10 @@ class CarListing(BaseModel):
     tier: str = ""
     summary: str = ""
     rank_score: int = 0
+    # Tundra evaluation results
+    disqualifiers: list[str] = []
+    flags: list[str] = []
+    tier_reasoning: str = ""
 
     @classmethod
     def from_ddg_result(cls, result: dict) -> "CarListing":

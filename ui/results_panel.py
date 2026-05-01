@@ -77,7 +77,7 @@ class ResultsPanel(QWidget):
             tab = TierTab(tier)
             self._tabs[tier] = tab
             color = TIER_COLORS.get(tier, "#e6edf3")
-            label = f"{tier}  —  {tier_label(tier)}"
+            label = f"{tier} — {tier_label(tier)}"
             self._tab_widget.addTab(tab, label)
             idx = self._tab_widget.count() - 1
             self._tab_widget.tabBar().setTabTextColor(idx, _qcolor(color))
