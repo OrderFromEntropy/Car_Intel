@@ -1,15 +1,19 @@
 """DuckDuckGo search aggregator for car listings.
 
 Query strategy:
-  - Primary: broad queries using the site name as a keyword (reliable)
-  - Secondary: site: operator queries (sometimes work, zero-result safe)
-  - Sequential execution with delays to avoid DDG rate limiting
+  - Primary: very broad queries (just vehicle name + "for sale") — reliable on DDG
+  - Secondary: site-name-as-keyword queries for targeted results
+  - Tertiary: site: operator (inconsistent but occasionally works)
+  - Sequential with delay to avoid rate limiting
+  - Per-query status callbacks for visible UI feedback
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from typing import Callable
 
 import pandas as pd
 from duckduckgo_search import DDGS
@@ -18,65 +22,61 @@ from core.models import CarListing, CarProfile
 
 log = logging.getLogger(__name__)
 
-# These sites are used as search keywords AND for result source tagging
-TARGET_SITES = ["cars.com", "autotrader.com", "carfax.com"]
-
-# Broader acceptance — tag any recognisable listing domain
-_LISTING_DOMAINS = [
-    "cars.com", "autotrader.com", "carfax.com",
-    "cargurus.com", "truecar.com", "edmunds.com",
-    "craigslist.org", "facebook.com/marketplace",
-    "marketplace.facebook.com", "offerups.com",
-]
-
-RESULTS_PER_QUERY = 15
+TARGET_SITES = ["autotrader.com", "cars.com", "carfax.com"]
+RESULTS_PER_QUERY = 10   # lower = faster, less likely to time out
 MAX_TOTAL = 50
-_QUERY_DELAY = 0.8   # seconds between DDG calls to stay under rate limit
+_QUERY_DELAY = 1.0        # seconds between queries
 _ERROR_DELAY = 2.0
 
 
 def _build_queries(profile: CarProfile) -> list[str]:
-    base = f"{profile.make} {profile.model}".strip()
-    if profile.trim:
-        base = f"{base} {profile.trim}"
+    make = profile.make.strip()
+    model = profile.model.strip()
+    base = f"{make} {model}"
 
-    year_str = ""
+    # Trim: only add if it's a real value
+    trim = (profile.trim or "").strip()
+    if trim.lower() in ("", "any", "open"):
+        trim = ""
+    full_base = f"{base} {trim}".strip() if trim else base
+
+    # Year: pick the midpoint year or single year as primary anchor
+    year_anchor = ""
     if profile.year_min and profile.year_max:
-        if profile.year_min == profile.year_max:
-            year_str = str(profile.year_min)
-        else:
-            year_str = f"{profile.year_min} {profile.year_max}"
+        year_anchor = str((profile.year_min + profile.year_max) // 2)
     elif profile.year_min:
-        year_str = str(profile.year_min)
+        year_anchor = str(profile.year_min)
     elif profile.year_max:
-        year_str = str(profile.year_max)
+        year_anchor = str(profile.year_max)
 
-    location = f"near {profile.zipcode}" if profile.zipcode else ""
+    zip_code = (profile.zipcode or "").strip()
 
-    def q(*parts) -> str:
+    def q(*parts: str) -> str:
         return " ".join(p for p in parts if p).strip()
 
-    queries = []
+    queries: list[str] = []
 
-    # ── Primary: broad, no site: operator ────────────────────────────
-    # General listing search
-    queries.append(q(year_str, base, "for sale used", location))
+    # Tier 1: broadest possible — highest DDG hit rate
+    queries.append(q(base, "for sale"))
+    queries.append(q(base, "used for sale"))
+    if zip_code:
+        queries.append(q(full_base, "for sale", zip_code))
 
-    # One query per target site (site name as keyword, not operator)
+    # Tier 2: with year anchor
+    if year_anchor:
+        queries.append(q(year_anchor, base, "for sale"))
+        queries.append(q(year_anchor, full_base, "used"))
+
+    # Tier 3: site-name as keyword (more reliable than site: operator)
     for site in TARGET_SITES:
-        queries.append(q(year_str, base, "for sale", site, location))
+        queries.append(q(year_anchor, full_base, site))
 
-    # Alternative phrasing for diversity
-    queries.append(q("buy used", year_str, base, location))
-    queries.append(q(year_str, base, "listing price", location))
-
-    # ── Secondary: site: operator (works inconsistently, 0-result safe) ──
+    # Tier 4: site: operator (may return 0 but worth trying)
     for site in TARGET_SITES:
-        site_q = f"site:{site}"
-        if profile.zipcode:
-            queries.append(q(site_q, year_str, base, profile.zipcode))
+        if zip_code:
+            queries.append(q(f"site:{site}", year_anchor, base, zip_code))
         else:
-            queries.append(q(site_q, year_str, base))
+            queries.append(q(f"site:{site}", year_anchor, base))
 
     return [x for x in queries if x]
 
@@ -84,50 +84,68 @@ def _build_queries(profile: CarProfile) -> list[str]:
 def _dedupe(listings: list[CarListing]) -> list[CarListing]:
     seen: set[str] = set()
     out: list[CarListing] = []
-    for l in listings:
-        if l.url and l.url not in seen:
-            seen.add(l.url)
-            out.append(l)
+    for listing in listings:
+        if listing.url and listing.url not in seen:
+            seen.add(listing.url)
+            out.append(listing)
     return out
 
 
-async def run_search(profile: CarProfile) -> list[CarListing]:
-    """Run queries sequentially (rate-limit safe) and return up to MAX_TOTAL unique listings."""
+async def run_search(
+    profile: CarProfile,
+    status_cb: Callable[[str], None] | None = None,
+) -> list[CarListing]:
+    """Run queries sequentially and return up to MAX_TOTAL unique listings."""
     queries = _build_queries(profile)
-    log.info("Running %d queries sequentially", len(queries))
-
+    log.info("Search starting: %d queries for %r", len(queries), profile.to_search_summary())
     all_listings: list[CarListing] = []
 
     for i, query in enumerate(queries):
+        n_unique = len(_dedupe(all_listings))
+        msg = f"Search {i + 1}/{len(queries)} — {n_unique} found so far…"
+        log.info(msg)
+        if status_cb:
+            status_cb(msg)
+
         try:
-            results = await asyncio.to_thread(_ddg_search, query)
-            batch = [CarListing.from_ddg_result(r) for r in results]
+            raw = await asyncio.to_thread(_ddg_search, query)
+            batch = [CarListing.from_ddg_result(r) for r in raw]
             all_listings.extend(batch)
-            log.info("Query %d/%d %r → %d results", i + 1, len(queries), query, len(batch))
+            log.info("  Query %r → %d raw results", query[:60], len(batch))
         except Exception as exc:
-            log.warning("Query %d failed (%s): %r", i + 1, exc, query)
+            log.warning("  Query %d failed: %s — %r", i + 1, exc, query)
             await asyncio.sleep(_ERROR_DELAY)
             continue
 
-        # Stop early once we have enough unique hits
         if len(_dedupe(all_listings)) >= MAX_TOTAL:
-            log.info("Reached %d unique listings — stopping early", MAX_TOTAL)
+            log.info("Reached %d unique — stopping early", MAX_TOTAL)
             break
 
         await asyncio.sleep(_QUERY_DELAY)
 
     unique = _dedupe(all_listings)
-    log.info("Total unique listings: %d", len(unique))
+    log.info("Search complete: %d unique listings", len(unique))
     return unique[:MAX_TOTAL]
 
 
 def _ddg_search(query: str) -> list[dict]:
-    """Run a single DDG text search. Returns empty list on any error."""
+    """Synchronous DDG search. Tries without safesearch first, then with."""
+    # Attempt 1: no safesearch kwarg (most compatible across DDGS versions)
     try:
         with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=RESULTS_PER_QUERY, safesearch="off"))
+            results = list(ddgs.text(query, max_results=RESULTS_PER_QUERY))
+        if results:
+            return results
     except Exception as exc:
-        log.warning("DDGS error for %r: %s", query, exc)
+        log.warning("DDGS attempt 1 failed for %r: %s", query[:60], exc)
+
+    # Attempt 2: with explicit safesearch off
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=RESULTS_PER_QUERY, safesearch="off"))
+        return results or []
+    except Exception as exc:
+        log.warning("DDGS attempt 2 failed for %r: %s", query[:60], exc)
         return []
 
 

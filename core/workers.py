@@ -39,10 +39,18 @@ class SearchWorker(QThread):
 
     def run(self):
         try:
-            self.status_update.emit("Searching car listings…")
-            listings = _run_coro(run_search(self.car_profile))
+            self.status_update.emit("Connecting to DuckDuckGo…")
+
+            def search_status(msg: str) -> None:
+                self.status_update.emit(msg)
+
+            listings = _run_coro(run_search(self.car_profile, status_cb=search_status))
+
             if not listings:
-                self.error_occurred.emit("No listings found. Try broadening your search.")
+                self.error_occurred.emit(
+                    "No listings found — DDG returned 0 results. "
+                    "Check your internet connection or try a broader search (remove zip / trim)."
+                )
                 return
 
             self.status_update.emit(f"Found {len(listings)} listings. Ranking with AI…")
@@ -75,9 +83,9 @@ class SearchWorker(QThread):
                 )
             )
 
-            self.status_update.emit("Complete!")
+            self.status_update.emit(f"Complete — {len(final)} listings ranked.")
             self.results_ready.emit(final)
 
         except Exception as exc:
             log.exception("SearchWorker failed")
-            self.error_occurred.emit(str(exc))
+            self.error_occurred.emit(f"Search pipeline error: {exc}")
