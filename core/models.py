@@ -85,10 +85,21 @@ class CarListing(BaseModel):
         url = result.get("href", result.get("link", ""))
         snippet = result.get("body", result.get("snippet", ""))
 
+        _DOMAIN_LABELS = {
+            "cars.com": "cars.com",
+            "autotrader.com": "autotrader.com",
+            "carfax.com": "carfax.com",
+            "cargurus.com": "cargurus.com",
+            "truecar.com": "truecar.com",
+            "edmunds.com": "edmunds.com",
+            "craigslist.org": "craigslist",
+            "facebook.com": "fb marketplace",
+            "marketplace.facebook.com": "fb marketplace",
+        }
         source = ""
-        for site in ("cars.com", "carfax.com", "autotrader.com"):
-            if site in url:
-                source = site
+        for domain, label in _DOMAIN_LABELS.items():
+            if domain in url:
+                source = label
                 break
 
         price = _extract_price(title + " " + snippet)

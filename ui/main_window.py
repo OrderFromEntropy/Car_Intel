@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         self._progress.show()
         self._progress.setValue(0)
         self._set_status("Launching search pipeline…")
+        self._chat_panel.start_truck()
 
         worker = SearchWorker(car_profile, user_profile)
         self._search_worker = worker
@@ -253,6 +254,7 @@ class MainWindow(QMainWindow):
         worker.results_ready.connect(self._on_results_ready)
         worker.error_occurred.connect(self._on_search_error)
         worker.finished.connect(lambda: self._progress.hide())
+        worker.finished.connect(self._chat_panel.stop_truck)
 
         worker.start()
 

@@ -25,6 +25,7 @@ from core.interview import (
 )
 from core.models import CarProfile
 from core.profile_manager import UserProfile
+from ui.truck_animation import TruckAnimationWidget
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,14 @@ class ChatPanel(QWidget):
 
     # ── Public API ───────────────────────────────────────────────────────
 
+    def start_truck(self) -> None:
+        """Start the driving animation (call during background search)."""
+        self._truck.start()
+
+    def stop_truck(self) -> None:
+        """Stop the driving animation."""
+        self._truck.stop()
+
     def load_profile(self, user_profile: UserProfile) -> None:
         """Switch to a different user profile and restart the interview."""
         self._user_profile = user_profile
@@ -160,11 +169,9 @@ class ChatPanel(QWidget):
         self._chat_view.setReadOnly(True)
         root.addWidget(self._chat_view, 1)
 
-        # Typing indicator
-        self._typing_label = QLabel("AI is thinking…")
-        self._typing_label.setStyleSheet("color: #8b949e; font-size: 11px; padding: 4px 16px;")
-        self._typing_label.hide()
-        root.addWidget(self._typing_label)
+        # Truck animation (shown during AI thinking and search)
+        self._truck = TruckAnimationWidget()
+        root.addWidget(self._truck)
 
         # Search trigger bar
         self._search_bar = QWidget()
@@ -244,7 +251,7 @@ class ChatPanel(QWidget):
         self._history.append({"role": "user", "content": text})
         self._send_btn.setEnabled(False)
         self._input.setEnabled(False)
-        self._typing_label.show()
+        self._truck.start()
         self._start_stream()
 
     def _start_stream(self):
@@ -262,7 +269,7 @@ class ChatPanel(QWidget):
         self._update_streaming_bubble(self._ai_reply_buffer)
 
     def _on_reply_complete(self, full_reply: str):
-        self._typing_label.hide()
+        self._truck.stop()
         self._stream_worker = None
         self._send_btn.setEnabled(True)
         self._input.setEnabled(True)
@@ -285,7 +292,7 @@ class ChatPanel(QWidget):
         self._history.append({"role": "assistant", "content": full_reply})
 
     def _on_stream_error(self, error: str):
-        self._typing_label.hide()
+        self._truck.stop()
         self._stream_worker = None
         self._send_btn.setEnabled(True)
         self._input.setEnabled(True)
