@@ -1,46 +1,62 @@
-"""DuckDuckGo search aggregator for car listings.
+"""DuckDuckGo/DDGS search aggregator for car listings.
 
-Query strategy:
-  - Primary: very broad queries (just vehicle name + "for sale") — reliable on DDG
-  - Secondary: site-name-as-keyword queries for targeted results
-  - Tertiary: site: operator (inconsistent but occasionally works)
-  - Sequential with delay to avoid rate limiting
-  - Per-query status callbacks for visible UI feedback
+NOTE: The duckduckgo_search package was renamed to ddgs.
+Run: pip install ddgs
+
+Query strategy (broad → specific to maximise results from Bing):
+  Tier 1 — just make+model, no trim, no year → highest hit rate
+  Tier 2 — add year anchor
+  Tier 3 — add site name as keyword
+  Tier 4 — add full trim + zip
+  Tier 5 — site: operator (sometimes works)
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Callable
 
 import pandas as pd
-from duckduckgo_search import DDGS
+
+# Support both the renamed package (ddgs) and the old one
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS  # type: ignore
 
 from core.models import CarListing, CarProfile
 
 log = logging.getLogger(__name__)
 
 TARGET_SITES = ["autotrader.com", "cars.com", "carfax.com"]
-RESULTS_PER_QUERY = 10   # lower = faster, less likely to time out
+
+_LISTING_DOMAINS = {
+    "cars.com": "cars.com",
+    "autotrader.com": "autotrader.com",
+    "carfax.com": "carfax.com",
+    "cargurus.com": "cargurus.com",
+    "truecar.com": "truecar.com",
+    "edmunds.com": "edmunds.com",
+    "craigslist.org": "craigslist",
+    "facebook.com": "fb marketplace",
+}
+
+RESULTS_PER_QUERY = 15
 MAX_TOTAL = 50
-_QUERY_DELAY = 1.0        # seconds between queries
+_QUERY_DELAY = 1.0
 _ERROR_DELAY = 2.0
 
 
 def _build_queries(profile: CarProfile) -> list[str]:
-    make = profile.make.strip()
-    model = profile.model.strip()
-    base = f"{make} {model}"
+    make = (profile.make or "").strip()
+    model = (profile.model or "").strip()
+    base = f"{make} {model}".strip()   # e.g. "Toyota Tundra"
 
-    # Trim: only add if it's a real value
     trim = (profile.trim or "").strip()
-    if trim.lower() in ("", "any", "open"):
+    if trim.lower() in ("", "any", "open", "none"):
         trim = ""
-    full_base = f"{base} {trim}".strip() if trim else base
 
-    # Year: pick the midpoint year or single year as primary anchor
     year_anchor = ""
     if profile.year_min and profile.year_max:
         year_anchor = str((profile.year_min + profile.year_max) // 2)
@@ -56,27 +72,31 @@ def _build_queries(profile: CarProfile) -> list[str]:
 
     queries: list[str] = []
 
-    # Tier 1: broadest possible — highest DDG hit rate
-    queries.append(q(base, "for sale"))
-    queries.append(q(base, "used for sale"))
+    # ── Tier 1: broadest — make+model only ───────────────────────────────
+    queries.append(q(base, "for sale"))                   # "Toyota Tundra for sale"
+    queries.append(q(base, "used"))                        # "Toyota Tundra used"
     if zip_code:
-        queries.append(q(full_base, "for sale", zip_code))
+        queries.append(q(base, "for sale", zip_code))     # + zip
 
-    # Tier 2: with year anchor
+    # ── Tier 2: add year ─────────────────────────────────────────────────
     if year_anchor:
         queries.append(q(year_anchor, base, "for sale"))
-        queries.append(q(year_anchor, full_base, "used"))
-
-    # Tier 3: site-name as keyword (more reliable than site: operator)
-    for site in TARGET_SITES:
-        queries.append(q(year_anchor, full_base, site))
-
-    # Tier 4: site: operator (may return 0 but worth trying)
-    for site in TARGET_SITES:
         if zip_code:
-            queries.append(q(f"site:{site}", year_anchor, base, zip_code))
-        else:
-            queries.append(q(f"site:{site}", year_anchor, base))
+            queries.append(q(year_anchor, base, zip_code))
+
+    # ── Tier 3: site name as keyword (with base only, no trim) ───────────
+    for site in TARGET_SITES:
+        queries.append(q(year_anchor, base, site))
+
+    # ── Tier 4: add trim (more specific — after broad passes) ────────────
+    if trim:
+        queries.append(q(year_anchor, base, trim, "for sale"))
+        for site in TARGET_SITES:
+            queries.append(q(year_anchor, base, trim, site))
+
+    # ── Tier 5: site: operator ───────────────────────────────────────────
+    for site in TARGET_SITES:
+        queries.append(q(f"site:{site}", year_anchor, base, zip_code))
 
     return [x for x in queries if x]
 
@@ -95,9 +115,8 @@ async def run_search(
     profile: CarProfile,
     status_cb: Callable[[str], None] | None = None,
 ) -> list[CarListing]:
-    """Run queries sequentially and return up to MAX_TOTAL unique listings."""
     queries = _build_queries(profile)
-    log.info("Search starting: %d queries for %r", len(queries), profile.to_search_summary())
+    log.info("Search: %d queries for %r", len(queries), profile.to_search_summary())
     all_listings: list[CarListing] = []
 
     for i, query in enumerate(queries):
@@ -111,9 +130,9 @@ async def run_search(
             raw = await asyncio.to_thread(_ddg_search, query)
             batch = [CarListing.from_ddg_result(r) for r in raw]
             all_listings.extend(batch)
-            log.info("  Query %r → %d raw results", query[:60], len(batch))
+            log.info("  %r → %d results", query[:65], len(batch))
         except Exception as exc:
-            log.warning("  Query %d failed: %s — %r", i + 1, exc, query)
+            log.warning("  Query %d failed: %s", i + 1, exc)
             await asyncio.sleep(_ERROR_DELAY)
             continue
 
@@ -129,23 +148,22 @@ async def run_search(
 
 
 def _ddg_search(query: str) -> list[dict]:
-    """Synchronous DDG search. Tries without safesearch first, then with."""
-    # Attempt 1: no safesearch kwarg (most compatible across DDGS versions)
+    """Single DDG/DDGS text search, two attempts for version compatibility."""
+    # Attempt 1: no extra kwargs (broadest compatibility)
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=RESULTS_PER_QUERY))
         if results:
             return results
     except Exception as exc:
-        log.warning("DDGS attempt 1 failed for %r: %s", query[:60], exc)
+        log.debug("DDGS attempt 1 failed for %r: %s", query[:60], exc)
 
-    # Attempt 2: with explicit safesearch off
+    # Attempt 2: explicit safesearch
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=RESULTS_PER_QUERY, safesearch="off"))
-        return results or []
+            return list(ddgs.text(query, max_results=RESULTS_PER_QUERY, safesearch="off")) or []
     except Exception as exc:
-        log.warning("DDGS attempt 2 failed for %r: %s", query[:60], exc)
+        log.debug("DDGS attempt 2 failed for %r: %s", query[:60], exc)
         return []
 
 

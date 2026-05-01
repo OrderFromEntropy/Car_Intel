@@ -6,7 +6,6 @@ import asyncio
 import logging
 
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
-from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -258,7 +257,7 @@ class ChatPanel(QWidget):
         worker = StreamWorker(self._history, self._user_profile)
         self._stream_worker = worker
         self._ai_reply_buffer = ""
-        self._append_ai_message_start()
+        # Tokens accumulate silently; truck provides visual feedback
         worker.token_received.connect(self._on_token)
         worker.reply_complete.connect(self._on_reply_complete)
         worker.error_occurred.connect(self._on_stream_error)
@@ -266,7 +265,6 @@ class ChatPanel(QWidget):
 
     def _on_token(self, token: str):
         self._ai_reply_buffer += token
-        self._update_streaming_bubble(self._ai_reply_buffer)
 
     def _on_reply_complete(self, full_reply: str):
         self._truck.stop()
@@ -288,7 +286,9 @@ class ChatPanel(QWidget):
                 self._current_car_profile = car_profile
                 self._show_search_ready(car_profile)
 
-        self._finalize_streaming_bubble(display_reply)
+        # Render the complete reply atomically — no fragile mid-stream HTML edits
+        if display_reply.strip():
+            self._append_ai_message(display_reply)
         self._history.append({"role": "assistant", "content": full_reply})
 
     def _on_stream_error(self, error: str):
@@ -327,40 +327,6 @@ class ChatPanel(QWidget):
         )
         self._chat_view.append(html)
         self._scroll_to_bottom()
-
-    def _append_ai_message_start(self):
-        html = (
-            f'<div id="stream_bubble" style="{_AI_BUBBLE_CSS}">'
-            f'<span style="color:#3fb950;font-weight:700;font-size:11px;">CARINTEL AI</span><br>'
-            f'<span id="stream_content" style="color:#e6edf3;"></span>'
-            f"</div><br>"
-        )
-        self._chat_view.append(html)
-        self._scroll_to_bottom()
-
-    def _update_streaming_bubble(self, full_text: str):
-        self._replace_last_ai_bubble(full_text)
-
-    def _finalize_streaming_bubble(self, text: str):
-        self._replace_last_ai_bubble(text)
-
-    def _replace_last_ai_bubble(self, text: str):
-        full_html = self._chat_view.toHtml()
-        marker = '<span id="stream_content"'
-        if marker in full_html:
-            rendered = _render_markdown_lite(text)
-            new_block = (
-                f'<div style="{_AI_BUBBLE_CSS}">'
-                f'<span style="color:#3fb950;font-weight:700;font-size:11px;">CARINTEL AI</span><br>'
-                f'<span style="color:#e6edf3;">{rendered}</span>'
-                f"</div><br>"
-            )
-            start = full_html.rfind(f'<div style="{_AI_BUBBLE_CSS}">')
-            if start != -1:
-                end = full_html.find("</div><br>", start) + len("</div><br>")
-                updated = full_html[:start] + new_block + full_html[end:]
-                self._chat_view.setHtml(updated)
-                self._scroll_to_bottom()
 
     def _append_ai_message(self, text: str):
         rendered = _render_markdown_lite(text)
