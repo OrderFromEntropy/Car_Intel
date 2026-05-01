@@ -146,8 +146,8 @@ class TruckAnimationWidget(QWidget):
 
         rows = _FRAMES[self._frame_idx]
 
-        # Mirror the art when driving left
-        if self._direction == -1:
+        # Mirror the art when driving right (art is drawn facing left)
+        if self._direction == 1:
             rows = [row[::-1] for row in rows]
 
         x0 = int(self._x)
