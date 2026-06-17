@@ -115,6 +115,13 @@ class InfographicGenerator:
     def _tw(self, draw, text, font) -> float:
         return draw.textlength(text, font=font)
 
+    def _fit_font(self, draw, text, max_w, start_size, bold=True, min_size=14):
+        """Return the largest bold/regular font at which `text` fits max_w."""
+        size = start_size
+        while size > min_size and self._tw(draw, text, self.fonts.get(size, bold)) > max_w:
+            size -= 1
+        return self.fonts.get(size, bold), size
+
     def _word_width(self, draw, word, size) -> float:
         return sum(self._tw(draw, seg, self.fonts.get(size, bold)) for seg, bold in word)
 
@@ -159,9 +166,9 @@ class InfographicGenerator:
         draw.rounded_rectangle([x, y, x + w, y + banner_h + self.CARD_RADIUS],
                                radius=self.CARD_RADIUS, fill=banner_color)
         draw.rectangle([x, y + banner_h, x + w, y + banner_h + self.CARD_RADIUS], fill=self.NAVY)
-        bf = self.fonts.get(30, bold=True)
+        bf, bsize = self._fit_font(draw, banner_text, w - 44, 30, bold=True, min_size=16)
         btw = self._tw(draw, banner_text, bf)
-        draw.text((x + (w - btw) / 2, y + (banner_h - 36) / 2), banner_text, font=bf, fill=self.WHITE)
+        draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 6) / 2), banner_text, font=bf, fill=self.WHITE)
 
         # Tiles.
         ty = y + banner_h + pad
@@ -258,7 +265,7 @@ class InfographicGenerator:
 
         # Title + subtitle.
         title = f"Executive Report: {theme['name']}"
-        tf = self.fonts.get(38, bold=True)
+        tf, _ = self._fit_font(draw, title, self.W - 2 * self.MARGIN, 38, bold=True, min_size=22)
         ttw = self._tw(draw, title, tf)
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
         sub = f"{county} County, TX ({analysis['region']}) — {timestamp.strftime('%A, %B %-d, %Y')}"
