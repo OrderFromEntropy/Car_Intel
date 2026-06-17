@@ -585,6 +585,27 @@ def severity_rank(severity: str) -> int:
     return SEVERITY_RANK.get((severity or 'unknown').strip().lower(), 0)
 
 
+def fmt_time(dt, pattern: str) -> str:
+    """
+    Cross-platform strftime.
+
+    The glibc "no leading zero" modifiers (%-d, %-I, %-m, %-H) raise
+    ValueError on Windows. This pre-substitutes those tokens with the plain
+    integer value, then defers the rest to the platform strftime, so the same
+    code runs on Windows, macOS, and Linux.
+    """
+    replacements = {
+        '%-d': str(dt.day),
+        '%-m': str(dt.month),
+        '%-I': str(((dt.hour - 1) % 12) + 1),
+        '%-H': str(dt.hour),
+    }
+    out = pattern
+    for token, value in replacements.items():
+        out = out.replace(token, value)
+    return dt.strftime(out)
+
+
 # ===========================================================================
 # SECTION: data_agent.py
 # ===========================================================================
@@ -992,13 +1013,13 @@ class RiskAnalysisAgent:
         if tl['deterioration_start']:
             try:
                 dt = datetime.fromisoformat(tl['deterioration_start'].replace('Z', '+00:00'))
-                parts.append(f"Conditions begin {dt.strftime('%A %-I:%M %p')}")
+                parts.append(f"Conditions begin {HZ.fmt_time(dt, '%A %-I:%M %p')}")
             except Exception:
                 parts.append('Conditions developing')
         if tl['improvement_expected']:
             try:
                 dt = datetime.fromisoformat(tl['improvement_expected'].replace('Z', '+00:00'))
-                parts.append(f"easing by {dt.strftime('%A %-I:%M %p')}")
+                parts.append(f"easing by {HZ.fmt_time(dt, '%A %-I:%M %p')}")
             except Exception:
                 pass
         tl['narrative'] = ', '.join(parts) if parts else 'Timeline unavailable — monitor official updates'
@@ -1017,7 +1038,7 @@ class RiskAnalysisAgent:
                 if timeline['deterioration_start'] and timeline['improvement_expected']:
                     a = datetime.fromisoformat(timeline['deterioration_start'].replace('Z', '+00:00'))
                     b = datetime.fromisoformat(timeline['improvement_expected'].replace('Z', '+00:00'))
-                    return f"{a.strftime('%-I %p').upper()} – {b.strftime('%-I %p').upper()}"
+                    return f"{HZ.fmt_time(a, '%-I %p').upper()} – {HZ.fmt_time(b, '%-I %p').upper()}"
             except Exception:
                 pass
             return 'See forecast'
@@ -1551,7 +1572,7 @@ class InfographicGenerator:
         tf, _ = self._fit_font(draw, title, self.W - 2 * self.MARGIN, 38, bold=True, min_size=22)
         ttw = self._tw(draw, title, tf)
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
-        sub = f"{county} County, TX ({analysis['region']}) — {timestamp.strftime('%A, %B %-d, %Y')}"
+        sub = f"{county} County, TX ({analysis['region']}) — {HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}"
         sf = self.fonts.get(20)
         stw = self._tw(draw, sub, sf)
         draw.text(((self.W - stw) / 2, top + title_h - 4), sub, font=sf, fill=self.GRAY)
@@ -1670,7 +1691,7 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 def _fmt_alert_dt(iso: str) -> Optional[str]:
     try:
         dt = datetime.fromisoformat(iso.replace('Z', '+00:00'))
-        return dt.strftime("%A %-m/%-d %-I:%M %p")
+        return HZ.fmt_time(dt, "%A %-m/%-d %-I:%M %p")
     except Exception:
         return None
 

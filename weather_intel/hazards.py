@@ -371,3 +371,24 @@ SEVERITY_RANK = {'extreme': 4, 'severe': 3, 'moderate': 2, 'minor': 1, 'unknown'
 
 def severity_rank(severity: str) -> int:
     return SEVERITY_RANK.get((severity or 'unknown').strip().lower(), 0)
+
+
+def fmt_time(dt, pattern: str) -> str:
+    """
+    Cross-platform strftime.
+
+    The glibc "no leading zero" modifiers (%-d, %-I, %-m, %-H) raise
+    ValueError on Windows. This pre-substitutes those tokens with the plain
+    integer value, then defers the rest to the platform strftime, so the same
+    code runs on Windows, macOS, and Linux.
+    """
+    replacements = {
+        '%-d': str(dt.day),
+        '%-m': str(dt.month),
+        '%-I': str(((dt.hour - 1) % 12) + 1),
+        '%-H': str(dt.hour),
+    }
+    out = pattern
+    for token, value in replacements.items():
+        out = out.replace(token, value)
+    return dt.strftime(out)

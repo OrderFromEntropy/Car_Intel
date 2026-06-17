@@ -268,7 +268,7 @@ class InfographicGenerator:
         tf, _ = self._fit_font(draw, title, self.W - 2 * self.MARGIN, 38, bold=True, min_size=22)
         ttw = self._tw(draw, title, tf)
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
-        sub = f"{county} County, TX ({analysis['region']}) — {timestamp.strftime('%A, %B %-d, %Y')}"
+        sub = f"{county} County, TX ({analysis['region']}) — {HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}"
         sf = self.fonts.get(20)
         stw = self._tw(draw, sub, sf)
         draw.text(((self.W - stw) / 2, top + title_h - 4), sub, font=sf, fill=self.GRAY)

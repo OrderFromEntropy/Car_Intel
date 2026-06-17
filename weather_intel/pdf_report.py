@@ -26,7 +26,7 @@ from . import hazards as HZ
 def _fmt_alert_dt(iso: str) -> Optional[str]:
     try:
         dt = datetime.fromisoformat(iso.replace('Z', '+00:00'))
-        return dt.strftime("%A %-m/%-d %-I:%M %p")
+        return HZ.fmt_time(dt, "%A %-m/%-d %-I:%M %p")
     except Exception:
         return None
 

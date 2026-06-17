@@ -208,13 +208,13 @@ class RiskAnalysisAgent:
         if tl['deterioration_start']:
             try:
                 dt = datetime.fromisoformat(tl['deterioration_start'].replace('Z', '+00:00'))
-                parts.append(f"Conditions begin {dt.strftime('%A %-I:%M %p')}")
+                parts.append(f"Conditions begin {HZ.fmt_time(dt, '%A %-I:%M %p')}")
             except Exception:
                 parts.append('Conditions developing')
         if tl['improvement_expected']:
             try:
                 dt = datetime.fromisoformat(tl['improvement_expected'].replace('Z', '+00:00'))
-                parts.append(f"easing by {dt.strftime('%A %-I:%M %p')}")
+                parts.append(f"easing by {HZ.fmt_time(dt, '%A %-I:%M %p')}")
             except Exception:
                 pass
         tl['narrative'] = ', '.join(parts) if parts else 'Timeline unavailable — monitor official updates'
@@ -233,7 +233,7 @@ class RiskAnalysisAgent:
                 if timeline['deterioration_start'] and timeline['improvement_expected']:
                     a = datetime.fromisoformat(timeline['deterioration_start'].replace('Z', '+00:00'))
                     b = datetime.fromisoformat(timeline['improvement_expected'].replace('Z', '+00:00'))
-                    return f"{a.strftime('%-I %p').upper()} – {b.strftime('%-I %p').upper()}"
+                    return f"{HZ.fmt_time(a, '%-I %p').upper()} – {HZ.fmt_time(b, '%-I %p').upper()}"
             except Exception:
                 pass
             return 'See forecast'
