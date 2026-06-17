@@ -1,0 +1,6 @@
+requests>=2.31.0
+reportlab>=4.0.0
+Pillow>=10.0.0
+# Optional: richer LLM-generated narratives via a local Ollama model.
+# Without it, the system automatically falls back to deterministic templates.
+langchain-ollama>=0.1.0
