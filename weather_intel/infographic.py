@@ -94,10 +94,16 @@ def _parse_words(text: str) -> List[Word]:
 
 
 class InfographicGenerator:
-    # Layout constants (pixels).
-    W = 1100
-    MARGIN = 70
-    CARD_RADIUS = 18
+    # Layout constants (pixels). Sized so text remains legible when the image is
+    # placed full-page in the PDF.
+    W = 1080
+    MARGIN = 58
+    CARD_RADIUS = 24
+    # Card geometry (shared by the size estimate in generate() and _draw_card()).
+    PAD = 32
+    BANNER_H = 86
+    TILE_H = 196
+    TIPS_H = 72
     NAVY = (15, 32, 64)
     NAVY_LIGHT = (28, 52, 92)
     WHITE = (255, 255, 255)
@@ -152,62 +158,64 @@ class InfographicGenerator:
             cx += space
 
     # --- card pieces --------------------------------------------------------
+    def _card_height(self, has_tips: bool) -> int:
+        tips = (self.PAD + self.TIPS_H) if has_tips else self.PAD
+        return self.BANNER_H + self.PAD + self.TILE_H + tips
+
     def _draw_card(self, img, draw, x, y, w, banner_text, banner_color,
                    tiles: List[Dict], tips: List[str]) -> int:
         """Render the hazard card; return its bottom y coordinate."""
-        pad = 26
-        banner_h = 64
-        tile_h = 150
-        tips_h = 56 if tips else 0
-        card_h = banner_h + pad + tile_h + (pad + tips_h if tips else pad)
+        pad, banner_h, tile_h = self.PAD, self.BANNER_H, self.TILE_H
+        tips_h = self.TIPS_H if tips else 0
+        card_h = self._card_height(bool(tips))
         # Card body.
         draw.rounded_rectangle([x, y, x + w, y + card_h], radius=self.CARD_RADIUS, fill=self.NAVY)
         # Banner (rounded top, themed color).
         draw.rounded_rectangle([x, y, x + w, y + banner_h + self.CARD_RADIUS],
                                radius=self.CARD_RADIUS, fill=banner_color)
         draw.rectangle([x, y + banner_h, x + w, y + banner_h + self.CARD_RADIUS], fill=self.NAVY)
-        bf, bsize = self._fit_font(draw, banner_text, w - 44, 30, bold=True, min_size=16)
+        bf, bsize = self._fit_font(draw, banner_text, w - 56, 40, bold=True, min_size=20)
         btw = self._tw(draw, banner_text, bf)
-        draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 6) / 2), banner_text, font=bf, fill=self.WHITE)
+        draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 8) / 2), banner_text, font=bf, fill=self.WHITE)
 
         # Tiles.
         ty = y + banner_h + pad
         n = max(1, len(tiles))
-        gap = 20
+        gap = 24
         tw = (w - 2 * pad - (n - 1) * gap) / n
         for i, tile in enumerate(tiles):
             tx = x + pad + i * (tw + gap)
-            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=12, fill=self.TILE)
+            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=16, fill=self.TILE)
             # Accent top bar.
-            draw.rounded_rectangle([tx + 16, ty + 16, tx + tw - 16, ty + 22],
-                                   radius=3, fill=tuple(tile.get('bar', banner_color)))
+            draw.rounded_rectangle([tx + 22, ty + 22, tx + tw - 22, ty + 31],
+                                   radius=4, fill=tuple(tile.get('bar', banner_color)))
             # Value (auto-shrink to fit).
             val = str(tile.get('value', ''))
-            vsize = 46
+            vsize = 64
             vf = self.fonts.get(vsize, bold=True)
-            while self._tw(draw, val, vf) > tw - 28 and vsize > 20:
+            while self._tw(draw, val, vf) > tw - 36 and vsize > 26:
                 vsize -= 2
                 vf = self.fonts.get(vsize, bold=True)
             vtw = self._tw(draw, val, vf)
-            draw.text((tx + (tw - vtw) / 2, ty + 48), val, font=vf, fill=self.WHITE)
+            draw.text((tx + (tw - vtw) / 2, ty + 62), val, font=vf, fill=self.WHITE)
             # Label.
-            lf = self.fonts.get(16, bold=True)
+            lf = self.fonts.get(22, bold=True)
             label = str(tile.get('label', ''))
             ltw = self._tw(draw, label, lf)
-            draw.text((tx + (tw - ltw) / 2, ty + tile_h - 36), label, font=lf, fill=self.TILE_LABEL)
+            draw.text((tx + (tw - ltw) / 2, ty + tile_h - 46), label, font=lf, fill=self.TILE_LABEL)
 
         # Tips strip.
         if tips:
             sy = ty + tile_h + pad
-            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=10, fill=self.NAVY_LIGHT)
-            tip_text = '   •   '.join(tips)
-            tf = self.fonts.get(17)
+            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=14, fill=self.NAVY_LIGHT)
+            tip_text = '    •    '.join(tips)
+            tf = self.fonts.get(22)
             # Trim tips that would overflow.
-            while self._tw(draw, tip_text, tf) > w - 2 * pad - 30 and '   •   ' in tip_text:
+            while self._tw(draw, tip_text, tf) > w - 2 * pad - 40 and '    •    ' in tip_text:
                 tips = tips[:-1]
-                tip_text = '   •   '.join(tips)
+                tip_text = '    •    '.join(tips)
             ttw = self._tw(draw, tip_text, tf)
-            draw.text((x + (w - ttw) / 2, sy + (tips_h - 21) / 2), tip_text, font=tf, fill=(214, 224, 235))
+            draw.text((x + (w - ttw) / 2, sy + (tips_h - 26) / 2), tip_text, font=tf, fill=(214, 224, 235))
 
         return y + card_h
 
@@ -235,10 +243,10 @@ class InfographicGenerator:
         scratch = Image.new('RGB', (10, 10))
         sdraw = ImageDraw.Draw(scratch)
         body_w = self.W - 2 * self.MARGIN
-        bullet_indent = 34
-        line_h = 30
-        bullet_gap = 14
-        bullet_size = 19
+        bullet_indent = 46
+        bullet_size = 28
+        line_h = 42
+        bullet_gap = 22
 
         wrapped_bullets = []
         bullets_h = 0
@@ -247,31 +255,31 @@ class InfographicGenerator:
             wrapped_bullets.append(lines)
             bullets_h += len(lines) * line_h + bullet_gap
 
+        # Resolve title font up front so the layout can reserve the right height.
+        title = f"Executive Report: {theme['name']}"
+        tf, tsize = self._fit_font(sdraw, title, self.W - 2 * self.MARGIN, 54, bold=True, min_size=30)
+
         # Compute total canvas height.
-        top = 56
-        title_h = 54
-        subtitle_h = 40
-        card_top = top + title_h + subtitle_h + 18
-        # Card height is computed inside _draw_card; estimate to size canvas.
-        banner_h, tile_h, pad = 64, 150, 26
-        tips_h = 56 if analysis.get('safety_guidance') else 0
-        card_h = banner_h + pad + tile_h + (pad + tips_h if tips_h else pad)
-        bullets_top = card_top + card_h + 40
-        section_label_h = 40
-        total_h = int(bullets_top + section_label_h + bullets_h + 60)
+        top = 64
+        title_h = tsize + 16
+        subtitle_h = 50
+        card_top = top + title_h + subtitle_h + 16
+        card_h = self._card_height(bool(analysis.get('safety_guidance')))
+        bullets_top = card_top + card_h + 48
+        section_label_h = 52
+        total_h = int(bullets_top + section_label_h + bullets_h + 70)
 
         img = Image.new('RGB', (self.W, total_h), self.WHITE)
         draw = ImageDraw.Draw(img)
 
         # Title + subtitle.
-        title = f"Executive Report: {theme['name']}"
-        tf, _ = self._fit_font(draw, title, self.W - 2 * self.MARGIN, 38, bold=True, min_size=22)
         ttw = self._tw(draw, title, tf)
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
-        sub = f"{county} County, TX ({analysis['region']}) — {HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}"
-        sf = self.fonts.get(20)
+        sub = (f"{county} County ({analysis['city']}), TX — "
+               f"{HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}")
+        sf = self.fonts.get(26)
         stw = self._tw(draw, sub, sf)
-        draw.text(((self.W - stw) / 2, top + title_h - 4), sub, font=sf, fill=self.GRAY)
+        draw.text(((self.W - stw) / 2, top + title_h), sub, font=sf, fill=self.GRAY)
 
         # Card.
         banner_text = f"{analysis['dominant_hazard_name'].upper()}  |  {county.upper()} COUNTY, TX"
@@ -281,15 +289,14 @@ class InfographicGenerator:
 
         # Bullet section.
         by = bullets_top
-        slf = self.fonts.get(22, bold=True)
+        slf = self.fonts.get(32, bold=True)
         draw.text((self.MARGIN, by), "Key Points", font=slf, fill=self.INK)
-        # Accent underline.
-        draw.rectangle([self.MARGIN, by + 32, self.MARGIN + 120, by + 36], fill=banner_color)
+        draw.rectangle([self.MARGIN, by + 46, self.MARGIN + 160, by + 52], fill=banner_color)
         by += section_label_h
 
         for lines in wrapped_bullets:
-            draw.ellipse([self.MARGIN + 4, by + 9, self.MARGIN + 13, by + 18], fill=banner_color)
-            for li, line in enumerate(lines):
+            draw.ellipse([self.MARGIN + 6, by + 12, self.MARGIN + 20, by + 26], fill=banner_color)
+            for line in lines:
                 self._draw_line(draw, self.MARGIN + bullet_indent, by, line, bullet_size, self.INK)
                 by += line_h
             by += bullet_gap

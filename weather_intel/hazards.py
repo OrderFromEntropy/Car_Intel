@@ -318,16 +318,16 @@ def flag_condition(wbgt_f: float) -> Optional[Dict]:
 # =============================================================================
 
 def texas_season(dt: Optional[datetime] = None) -> str:
-    """Return the operational Texas season label for a date."""
+    """Return the short Texas season label for a date (Winter/Spring/Summer/Fall)."""
     dt = dt or datetime.now()
     m = dt.month
     if m in (12, 1, 2):
         return 'Winter'
     if m in (3, 4, 5):
-        return 'Spring (Severe Weather Season)'
+        return 'Spring'
     if m in (6, 7, 8):
-        return 'Summer (Heat & Tropical Season)'
-    return 'Fall (Tropical & Transition Season)'
+        return 'Summer'
+    return 'Fall'
 
 
 def is_hurricane_season(dt: Optional[datetime] = None) -> bool:
@@ -371,6 +371,95 @@ SEVERITY_RANK = {'extreme': 4, 'severe': 3, 'moderate': 2, 'minor': 1, 'unknown'
 
 def severity_rank(severity: str) -> int:
     return SEVERITY_RANK.get((severity or 'unknown').strip().lower(), 0)
+
+
+# =============================================================================
+# CONTEXTUAL RISK LEVEL (season- and Texas-impact-aware)
+# =============================================================================
+#
+# Raw severity scores answer "how intense is the weather?" but leadership cares
+# about "how likely are impacts to our building/facility operations?" — and that
+# likelihood is hazard- and region-specific:
+#   * Flooding, tropical systems, tornadoes, severe storms force closures,
+#     damage, and evacuations -> High likelihood of operational impact.
+#   * Extreme heat can be severe, but climate-controlled facilities and Texas
+#     acclimatization make disruption *less likely* -> capped at Moderate.
+#   * In Texas, ice/freeze exposure is rare and infrastructure is limited, so
+#     even a minor freeze carries a High likelihood of impacts.
+#
+# clamp_level() applies a per-hazard floor/cap to the score-derived base level.
+
+LEVEL_ORDER = ['Low', 'Medium', 'Moderate', 'High']
+
+
+def _level_index(level: str) -> int:
+    try:
+        return LEVEL_ORDER.index(level)
+    except ValueError:
+        return 0
+
+
+def clamp_level(level: str, floor: Optional[str] = None, cap: Optional[str] = None) -> str:
+    i = _level_index(level)
+    if floor:
+        i = max(i, _level_index(floor))
+    if cap:
+        i = min(i, _level_index(cap))
+    return LEVEL_ORDER[i]
+
+
+def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
+                          has_warning: bool, freeze_signal: bool = False) -> str:
+    """
+    Adjust a score-derived risk level to reflect the likelihood of operational
+    (building/facility) impact in Texas, given the dominant hazard.
+    """
+    # High-impact disruptive events: flooding, tropical, severe storms/tornado.
+    if dominant in ('flood', 'tropical', 'severe_storm'):
+        floor = 'High' if has_warning else ('Moderate' if has_alert else None)
+        return clamp_level(base_level, floor=floor, cap='High')
+
+    # Winter weather in Texas: even a minor freeze is highly disruptive.
+    if dominant == 'winter_storm':
+        floor = 'High' if (has_alert or freeze_signal) else 'Moderate'
+        return clamp_level(base_level, floor=floor, cap='High')
+    if dominant == 'extreme_cold':
+        if has_warning or freeze_signal:
+            floor = 'High'
+        elif has_alert:
+            floor = 'Moderate'
+        else:
+            floor = None
+        return clamp_level(base_level, floor=floor, cap='High')
+
+    # Extreme heat: significant but lower likelihood of disrupting indoor ops.
+    if dominant == 'extreme_heat':
+        floor = 'Medium' if has_alert else None
+        return clamp_level(base_level, floor=floor, cap='Moderate')
+
+    # Fire weather: mostly indirect impact to building operations.
+    if dominant == 'fire_weather':
+        floor = 'Medium' if has_warning else None
+        return clamp_level(base_level, floor=floor, cap='Moderate')
+
+    if dominant == 'wind':
+        return clamp_level(base_level, cap='Moderate')
+    if dominant in ('fog_dust', 'air_quality'):
+        return clamp_level(base_level, cap='Medium')
+
+    return base_level
+
+
+def fmt_forecast_date(iso_or_dt) -> str:
+    """Format an ISO string or datetime as e.g. 'Friday, June 24th'."""
+    try:
+        dt = iso_or_dt if isinstance(iso_or_dt, datetime) else \
+            datetime.fromisoformat(str(iso_or_dt).replace('Z', '+00:00'))
+        d = dt.day
+        suffix = 'th' if 10 <= d % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')
+        return dt.strftime(f"%A, %B {d}{suffix}")
+    except Exception:
+        return "Date unavailable"
 
 
 def fmt_time(dt, pattern: str) -> str:

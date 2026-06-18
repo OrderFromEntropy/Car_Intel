@@ -16,11 +16,14 @@ record rather than raising, so a single outage never aborts the run.
 """
 
 import time
+from collections import defaultdict
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 import requests
 
 from .config import API_CONFIG, COUNTIES, county_alert_zone
+from . import hazards as HZ
 
 
 class WeatherDataAgent:
@@ -117,9 +120,26 @@ class WeatherDataAgent:
                 'max_rh': peak('relativeHumidity', max),
                 'max_wind_gust_mph': (lambda v: round(v * 0.621371, 0) if v is not None else None)(
                     peak('windGust', max)),
+                'daily_precip_in': self._daily_precip(gp),
             }
         except Exception:
             return {}
+
+    @staticmethod
+    def _daily_precip(gp: Dict) -> Dict[str, float]:
+        """Aggregate gridpoint QPF (mm) into projected per-day rainfall (inches)."""
+        totals = defaultdict(float)
+        for v in gp.get('quantitativePrecipitation', {}).get('values', []):
+            val = v.get('value')
+            valid = (v.get('validTime') or '').split('/')[0]
+            if val is None or not valid:
+                continue
+            try:
+                dt = datetime.fromisoformat(valid.replace('Z', '+00:00'))
+            except Exception:
+                continue
+            totals[HZ.fmt_forecast_date(dt)] += val
+        return {date: round(mm / 25.4, 2) for date, mm in totals.items()}
 
     # --------------------------------------------------------------- tropical
     def fetch_active_tropical_systems(self) -> Dict:

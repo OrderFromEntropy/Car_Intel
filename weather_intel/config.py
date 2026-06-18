@@ -69,50 +69,35 @@ SCORING_CONFIG = {
 # gridpoint forecast lookup. `region` informs seasonal/hazard context.
 
 COUNTIES = {
-    'El Paso': {
-        'fips': '48141', 'lat': 31.7619, 'lon': -106.4850,
-        'major_highways': ['I-10'], 'nws_office': 'El Paso',
-        'region': 'Far West Texas', 'coastal': False,
-    },
-    'Tarrant': {
-        'fips': '48439', 'lat': 32.7555, 'lon': -97.3308,
-        'major_highways': ['I-35W', 'I-20', 'I-30'], 'nws_office': 'Fort Worth',
-        'region': 'North Texas', 'coastal': False,
-    },
-    'McLennan': {
-        'fips': '48309', 'lat': 31.5493, 'lon': -97.1467,
-        'major_highways': ['I-35'], 'nws_office': 'Fort Worth',
-        'region': 'Central Texas', 'coastal': False,
-    },
     'Travis': {
-        'fips': '48453', 'lat': 30.2672, 'lon': -97.7431,
+        'fips': '48453', 'lat': 30.2672, 'lon': -97.7431, 'city': 'Austin',
         'major_highways': ['I-35', 'US-183'], 'nws_office': 'Austin/San Antonio',
         'region': 'Central Texas', 'coastal': False,
     },
     'Bexar': {
-        'fips': '48029', 'lat': 29.4241, 'lon': -98.4936,
+        'fips': '48029', 'lat': 29.4241, 'lon': -98.4936, 'city': 'San Antonio',
         'major_highways': ['I-10', 'I-35', 'I-37'], 'nws_office': 'Austin/San Antonio',
         'region': 'South Central Texas', 'coastal': False,
     },
+    'McLennan': {
+        'fips': '48309', 'lat': 31.5493, 'lon': -97.1467, 'city': 'Waco',
+        'major_highways': ['I-35'], 'nws_office': 'Fort Worth',
+        'region': 'Central Texas', 'coastal': False,
+    },
+    'Tarrant': {
+        'fips': '48439', 'lat': 32.7555, 'lon': -97.3308, 'city': 'Fort Worth',
+        'major_highways': ['I-35W', 'I-20', 'I-30'], 'nws_office': 'Fort Worth',
+        'region': 'North Texas', 'coastal': False,
+    },
     'Harris': {
-        'fips': '48201', 'lat': 29.7604, 'lon': -95.3698,
+        'fips': '48201', 'lat': 29.7604, 'lon': -95.3698, 'city': 'Houston',
         'major_highways': ['I-10', 'I-45', 'I-69'], 'nws_office': 'Houston/Galveston',
         'region': 'Upper Texas Coast', 'coastal': True,
     },
-    'Galveston': {
-        'fips': '48167', 'lat': 29.3013, 'lon': -94.7977,
-        'major_highways': ['I-45'], 'nws_office': 'Houston/Galveston',
-        'region': 'Upper Texas Coast', 'coastal': True,
-    },
-    'Nueces': {
-        'fips': '48355', 'lat': 27.8006, 'lon': -97.3964,
-        'major_highways': ['I-37', 'US-181'], 'nws_office': 'Corpus Christi',
-        'region': 'Coastal Bend', 'coastal': True,
-    },
-    'Cameron': {
-        'fips': '48061', 'lat': 25.9017, 'lon': -97.4975,
-        'major_highways': ['US-77', 'US-83'], 'nws_office': 'Brownsville',
-        'region': 'Rio Grande Valley', 'coastal': True,
+    'El Paso': {
+        'fips': '48141', 'lat': 31.7619, 'lon': -106.4850, 'city': 'El Paso',
+        'major_highways': ['I-10'], 'nws_office': 'El Paso',
+        'region': 'Far West Texas', 'coastal': False,
     },
 }
 
@@ -142,7 +127,7 @@ API_CONFIG = {
 
 PDF_CONFIG = {
     'title': 'TEXAS WEATHER OPERATIONAL RISK ASSESSMENT',
-    'subtitle': 'Year-Round Threat Intelligence — Risk Management & HR Leadership Brief',
+    'subtitle': 'Risk Management Leadership Brief',
     'font_size_title': 16,
     'font_size_subtitle': 12,
     'font_size_body': 10,

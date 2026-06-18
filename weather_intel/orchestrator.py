@@ -74,10 +74,11 @@ class WeatherRiskOrchestrator:
 
         # PHASE 4 — INFOGRAPHICS
         print("\nPHASE 4: INFOGRAPHIC GENERATION\n" + "-" * 70)
-        # By default produce infographics for the highest-risk counties.
+        # By default produce infographics for counties with a notable threat
+        # (active alert or at/above Medium likelihood of operational impact).
         if infographic_counties is None:
             infographic_counties = [a['county'] for a in analyses
-                                    if a['severity_score'] >= 26][:5]
+                                    if a['active_alerts'] or a['severity_score'] >= 26]
             if not infographic_counties and analyses:
                 infographic_counties = [analyses[0]['county']]
         infographics: Dict[str, str] = {}

@@ -78,11 +78,30 @@ weather_intel/
   run.py             CLI entry point
 ```
 
-## Adding a county
+## Monitored counties
 
-Add an entry to `COUNTIES` in `config.py` with its FIPS code and coordinates.
-The NWS county alert zone (`TXC` + last three FIPS digits) and forecast lookup
-are derived automatically.
+Six counties / metros are tracked: **Travis (Austin), Bexar (San Antonio),
+McLennan (Waco), Tarrant (Fort Worth), Harris (Houston), and El Paso**. To add
+one, add an entry to `COUNTIES` in `config.py` with its FIPS code, coordinates,
+and city; the NWS county alert zone (`TXC` + last three FIPS digits) and
+forecast lookup are derived automatically.
+
+## Season-aware risk framework
+
+Risk levels reflect the likelihood of impacts to *building/facility operations*,
+weighted for Texas and the current season (`hazards.contextual_risk_level`):
+
+- Flooding, tropical systems, tornadoes, and severe storms → **High**.
+- Extreme heat → capped at **Moderate** (severe potential, but climate-controlled
+  facilities and regional acclimatization lower the likelihood of disruption).
+- Any freeze/ice event → elevated to **High** given Texas's rare exposure and
+  limited cold-weather infrastructure.
+
+The PDF's RISK FRAMEWORK section rewrites itself for the active season, and the
+EXECUTIVE SUMMARY is a highlighted, bulleted block that grows with the number of
+counties experiencing events. The extended forecast includes **projected daily
+rainfall totals**. Each county analysis and its infographic begin on their own
+page; data sources are cited once.
 
 ## Design principle
 

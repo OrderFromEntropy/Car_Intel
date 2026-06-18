@@ -25,13 +25,11 @@ PROMPT_EXECUTIVE_SUMMARY = """You are generating an executive summary for Texas 
 INPUT DATA (JSON):
 {json_data}
 
-Write ONE paragraph (4-6 sentences) giving a 30,000-foot view:
-1. The overall threat level across Texas and the current season context.
-2. The specific dominant hazards present (name them explicitly).
-3. Which counties/regions face the highest likelihood of operational impacts.
-4. Key infrastructure concerns (power grid, highways, water systems, coastal/evacuation if tropical).
-
-Lead with the most widespread/severe hazard. Be concise and factual. Do NOT include recommendations, advice, or action items. Output only the paragraph text."""
+Output 4 to 7 SHORT, quick-hitting bullet lines (each on its own line, beginning with "- "). Bold the most important terms using **double asterisks** (county names, risk levels, hazards, key numbers). Cover:
+- A lead bullet stating the overall statewide threat level and how many counties are at High/Moderate likelihood of operational impacts.
+- One bullet per county that has a notable threat, naming the county, its risk level, and its dominant hazard.
+- A bullet on the key infrastructure concern (power grid, highways, water systems, evacuation if tropical).
+Be concise and factual. Do NOT include recommendations or advice. Output only the bullet lines."""
 
 PROMPT_COUNTY_NARRATIVE = """You are describing the weather situation for one Texas county as part of a year-round threat assessment.
 
@@ -62,53 +60,111 @@ class NarrativeGenerationAgent:
 
     # ------------------------------------------------------ executive summary
     def generate_executive_summary(self, analyses: List[Dict], season: str,
-                                   tropical_systems: List[Dict]) -> str:
+                                   tropical_systems: List[Dict]) -> List[str]:
+        """Return a list of quick-hitting bullet strings (with **bold** markup)."""
         print("Generating executive summary...")
-        risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
-        for a in analyses:
-            risk_dist[a['risk_level']].append(a['county'])
-
-        hazard_counties: Dict[str, List[str]] = {}
-        for a in analyses:
-            hazard_counties.setdefault(a['dominant_hazard_name'], []).append(a['county'])
-
-        input_data = {
-            'season': season,
-            'risk_distribution': risk_dist,
-            'highest_risk_counties': [a['county'] for a in analyses[:3]],
-            'dominant_hazards_by_county': hazard_counties,
-            'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
-            'total_counties': len(analyses),
-        }
-        data_json = json.dumps(input_data, indent=2)
-
         if self.llm_available:
             try:
-                return self.call_llm(PROMPT_EXECUTIVE_SUMMARY, data_json)
+                risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
+                for a in analyses:
+                    risk_dist[a['risk_level']].append(a['county'])
+                input_data = {
+                    'season': season,
+                    'risk_distribution': risk_dist,
+                    'counties': [{'county': a['county'], 'city': a['city'],
+                                  'risk_level': a['risk_level'],
+                                  'dominant_hazard': a['dominant_hazard_name']} for a in analyses],
+                    'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
+                }
+                raw = self.call_llm(PROMPT_EXECUTIVE_SUMMARY, json.dumps(input_data, indent=2))
+                bullets = self._parse_bullet_lines(raw)
+                if len(bullets) >= 2:
+                    return bullets
             except Exception as e:
                 print(f"LLM call failed: {e}; using template")
-        return self._template_summary(risk_dist, hazard_counties, season, tropical_systems)
+        return self._template_summary(analyses, season, tropical_systems)
 
-    def _template_summary(self, risk_dist, hazard_counties, season, tropical_systems) -> str:
-        parts = [f"Current season: {season}."]
-        if risk_dist['High']:
-            parts.append(f"High likelihood of operational impacts across {', '.join(risk_dist['High'])} "
-                         f"{'County' if len(risk_dist['High']) == 1 else 'Counties'}.")
-        elif risk_dist['Moderate']:
-            parts.append(f"Moderate likelihood of operational impacts developing across {', '.join(risk_dist['Moderate'])}.")
+    @staticmethod
+    def _parse_bullet_lines(raw: str) -> List[str]:
+        bullets = []
+        for line in raw.splitlines():
+            line = line.strip().lstrip('-*•').strip()
+            if line:
+                bullets.append(line)
+        return bullets
+
+    def _template_summary(self, analyses: List[Dict], season: str,
+                          tropical_systems: List[Dict]) -> List[str]:
+        risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
+        for a in analyses:
+            risk_dist[a['risk_level']].append(a)
+
+        bullets: List[str] = []
+
+        # Lead bullet — overall posture, scaled by counts.
+        n_high, n_mod = len(risk_dist['High']), len(risk_dist['Moderate'])
+        if n_high:
+            overall = 'High'
+        elif n_mod:
+            overall = 'Elevated'
+        elif risk_dist['Medium']:
+            overall = 'Moderate'
         else:
-            parts.append("Weather conditions being monitored statewide with limited operational impacts anticipated.")
+            overall = 'Low'
+        lead = f"Statewide threat level: **{overall}** ({season})."
+        tallies = []
+        if n_high:
+            tallies.append(f"**{n_high}** at High")
+        if n_mod:
+            tallies.append(f"**{n_mod}** at Moderate")
+        if tallies:
+            lead += " " + " and ".join(tallies) + " likelihood of operational impacts."
+        else:
+            lead += " No counties at elevated likelihood of operational impacts."
+        bullets.append(lead)
 
-        hz = [f"{name} ({', '.join(cs)})" for name, cs in hazard_counties.items()
-              if name != 'General Weather Watch']
-        if hz:
-            parts.append("Dominant hazards: " + "; ".join(hz) + ".")
+        # Active tropical systems (basin-wide).
         if tropical_systems:
-            parts.append("Active tropical system(s) in the basin: " +
-                         ", ".join(s['name'] for s in tropical_systems) +
-                         "; coastal counties under heightened monitoring.")
-        parts.append("Anticipated infrastructure concerns include the power grid, major highway corridors, and water systems where applicable.")
-        return " ".join(parts)
+            names = ', '.join(s['name'] for s in tropical_systems)
+            bullets.append(f"**Active tropical system(s):** {names} — coastal exposure under heightened monitoring.")
+
+        # One bullet per county with a notable threat (scales the summary length).
+        notable = [a for a in analyses if a['risk_level'] != 'Low' or a['active_alerts']]
+        for a in notable:
+            metric = self._metric_tag(a)
+            bullets.append(
+                f"**{a['county']} ({a['city']})**: **{a['risk_level']}** — {a['dominant_hazard_name']}"
+                + (f", {metric}" if metric else "") + ".")
+
+        # Aggregate infrastructure concern across elevated counties.
+        concerns = set()
+        for a in analyses:
+            if a['risk_level'] in ('High', 'Moderate'):
+                for key in ('public_safety', 'utilities', 'transportation'):
+                    if a['infrastructure_impacts'].get(key):
+                        concerns.add(key)
+        if concerns:
+            label = {'public_safety': 'public safety', 'utilities': 'the power grid and water systems',
+                     'transportation': 'major highway corridors'}
+            bullets.append("**Key concerns:** anticipated impacts to " +
+                           ", ".join(label[c] for c in ('public_safety', 'utilities', 'transportation') if c in concerns) + ".")
+        return bullets
+
+    @staticmethod
+    def _metric_tag(a: Dict) -> str:
+        m = a.get('metrics', {})
+        d = a['dominant_hazard']
+        if d == 'extreme_heat' and m.get('max_heat_index_f'):
+            return f"heat index to **{int(m['max_heat_index_f'])}°F**"
+        if d == 'extreme_cold' and m.get('min_wind_chill_f') is not None:
+            return f"wind chill to **{int(m['min_wind_chill_f'])}°F**"
+        if d == 'fire_weather' and m.get('min_rh') is not None:
+            return f"RH to **{int(m['min_rh'])}%**"
+        if d in ('severe_storm', 'tropical', 'wind') and m.get('max_wind_gust_mph'):
+            return f"gusts to **{int(m['max_wind_gust_mph'])} mph**"
+        if a['active_alerts']:
+            return f"**{a['active_alerts']}** active alert(s)"
+        return ""
 
     # ------------------------------------------------------ county narrative
     def generate_county_narrative(self, analysis: Dict) -> str:

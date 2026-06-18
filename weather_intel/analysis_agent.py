@@ -295,8 +295,21 @@ class RiskAnalysisAgent:
         metrics = self._derive_metrics(forecasts, grid)
         forecast_hazards = HZ.detect_forecast_hazards(all_text)
         score = self.calculate_severity_score(alerts, all_text, metrics)
-        risk_level, risk_desc = self.determine_risk_level(score)
         dominant = self._dominant_hazard(alerts, forecast_hazards, metrics, season)
+
+        # Convert the raw score to a base level, then adjust it for the
+        # likelihood of *operational* impact in Texas given the dominant hazard.
+        base_level, _ = self.determine_risk_level(score)
+        has_alert = bool(alerts)
+        has_warning = any(HZ.severity_rank(a.get('severity')) >= 3
+                          or 'warning' in (a.get('event', '').lower()) for a in alerts)
+        low_text = all_text.lower()
+        freeze_signal = (
+            (metrics.get('min_temp_f') is not None and metrics['min_temp_f'] <= 32) or
+            (metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 32) or
+            any(w in low_text for w in ('freeze', 'freezing', 'ice', 'sleet', 'snow', 'wintry')))
+        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning, freeze_signal)
+        risk_desc = self.risk_thresholds[risk_level]['description']
         infrastructure = self.analyze_infrastructure_impacts(dominant, all_text, metrics)
         timeline = self.extract_timeline(forecasts, alerts)
         tiles = self.build_metric_tiles(dominant, alerts, metrics, timeline)
@@ -307,6 +320,7 @@ class RiskAnalysisAgent:
 
         return {
             'county': county_name,
+            'city': cfg['city'],
             'region': cfg['region'],
             'coastal': cfg['coastal'],
             'risk_level': risk_level,

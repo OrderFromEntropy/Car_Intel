@@ -109,50 +109,35 @@ SCORING_CONFIG = {
 # gridpoint forecast lookup. `region` informs seasonal/hazard context.
 
 COUNTIES = {
-    'El Paso': {
-        'fips': '48141', 'lat': 31.7619, 'lon': -106.4850,
-        'major_highways': ['I-10'], 'nws_office': 'El Paso',
-        'region': 'Far West Texas', 'coastal': False,
-    },
-    'Tarrant': {
-        'fips': '48439', 'lat': 32.7555, 'lon': -97.3308,
-        'major_highways': ['I-35W', 'I-20', 'I-30'], 'nws_office': 'Fort Worth',
-        'region': 'North Texas', 'coastal': False,
-    },
-    'McLennan': {
-        'fips': '48309', 'lat': 31.5493, 'lon': -97.1467,
-        'major_highways': ['I-35'], 'nws_office': 'Fort Worth',
-        'region': 'Central Texas', 'coastal': False,
-    },
     'Travis': {
-        'fips': '48453', 'lat': 30.2672, 'lon': -97.7431,
+        'fips': '48453', 'lat': 30.2672, 'lon': -97.7431, 'city': 'Austin',
         'major_highways': ['I-35', 'US-183'], 'nws_office': 'Austin/San Antonio',
         'region': 'Central Texas', 'coastal': False,
     },
     'Bexar': {
-        'fips': '48029', 'lat': 29.4241, 'lon': -98.4936,
+        'fips': '48029', 'lat': 29.4241, 'lon': -98.4936, 'city': 'San Antonio',
         'major_highways': ['I-10', 'I-35', 'I-37'], 'nws_office': 'Austin/San Antonio',
         'region': 'South Central Texas', 'coastal': False,
     },
+    'McLennan': {
+        'fips': '48309', 'lat': 31.5493, 'lon': -97.1467, 'city': 'Waco',
+        'major_highways': ['I-35'], 'nws_office': 'Fort Worth',
+        'region': 'Central Texas', 'coastal': False,
+    },
+    'Tarrant': {
+        'fips': '48439', 'lat': 32.7555, 'lon': -97.3308, 'city': 'Fort Worth',
+        'major_highways': ['I-35W', 'I-20', 'I-30'], 'nws_office': 'Fort Worth',
+        'region': 'North Texas', 'coastal': False,
+    },
     'Harris': {
-        'fips': '48201', 'lat': 29.7604, 'lon': -95.3698,
+        'fips': '48201', 'lat': 29.7604, 'lon': -95.3698, 'city': 'Houston',
         'major_highways': ['I-10', 'I-45', 'I-69'], 'nws_office': 'Houston/Galveston',
         'region': 'Upper Texas Coast', 'coastal': True,
     },
-    'Galveston': {
-        'fips': '48167', 'lat': 29.3013, 'lon': -94.7977,
-        'major_highways': ['I-45'], 'nws_office': 'Houston/Galveston',
-        'region': 'Upper Texas Coast', 'coastal': True,
-    },
-    'Nueces': {
-        'fips': '48355', 'lat': 27.8006, 'lon': -97.3964,
-        'major_highways': ['I-37', 'US-181'], 'nws_office': 'Corpus Christi',
-        'region': 'Coastal Bend', 'coastal': True,
-    },
-    'Cameron': {
-        'fips': '48061', 'lat': 25.9017, 'lon': -97.4975,
-        'major_highways': ['US-77', 'US-83'], 'nws_office': 'Brownsville',
-        'region': 'Rio Grande Valley', 'coastal': True,
+    'El Paso': {
+        'fips': '48141', 'lat': 31.7619, 'lon': -106.4850, 'city': 'El Paso',
+        'major_highways': ['I-10'], 'nws_office': 'El Paso',
+        'region': 'Far West Texas', 'coastal': False,
     },
 }
 
@@ -182,7 +167,7 @@ API_CONFIG = {
 
 PDF_CONFIG = {
     'title': 'TEXAS WEATHER OPERATIONAL RISK ASSESSMENT',
-    'subtitle': 'Year-Round Threat Intelligence — Risk Management & HR Leadership Brief',
+    'subtitle': 'Risk Management Leadership Brief',
     'font_size_title': 16,
     'font_size_subtitle': 12,
     'font_size_body': 10,
@@ -530,16 +515,16 @@ def flag_condition(wbgt_f: float) -> Optional[Dict]:
 # =============================================================================
 
 def texas_season(dt: Optional[datetime] = None) -> str:
-    """Return the operational Texas season label for a date."""
+    """Return the short Texas season label for a date (Winter/Spring/Summer/Fall)."""
     dt = dt or datetime.now()
     m = dt.month
     if m in (12, 1, 2):
         return 'Winter'
     if m in (3, 4, 5):
-        return 'Spring (Severe Weather Season)'
+        return 'Spring'
     if m in (6, 7, 8):
-        return 'Summer (Heat & Tropical Season)'
-    return 'Fall (Tropical & Transition Season)'
+        return 'Summer'
+    return 'Fall'
 
 
 def is_hurricane_season(dt: Optional[datetime] = None) -> bool:
@@ -585,6 +570,95 @@ def severity_rank(severity: str) -> int:
     return SEVERITY_RANK.get((severity or 'unknown').strip().lower(), 0)
 
 
+# =============================================================================
+# CONTEXTUAL RISK LEVEL (season- and Texas-impact-aware)
+# =============================================================================
+#
+# Raw severity scores answer "how intense is the weather?" but leadership cares
+# about "how likely are impacts to our building/facility operations?" — and that
+# likelihood is hazard- and region-specific:
+#   * Flooding, tropical systems, tornadoes, severe storms force closures,
+#     damage, and evacuations -> High likelihood of operational impact.
+#   * Extreme heat can be severe, but climate-controlled facilities and Texas
+#     acclimatization make disruption *less likely* -> capped at Moderate.
+#   * In Texas, ice/freeze exposure is rare and infrastructure is limited, so
+#     even a minor freeze carries a High likelihood of impacts.
+#
+# clamp_level() applies a per-hazard floor/cap to the score-derived base level.
+
+LEVEL_ORDER = ['Low', 'Medium', 'Moderate', 'High']
+
+
+def _level_index(level: str) -> int:
+    try:
+        return LEVEL_ORDER.index(level)
+    except ValueError:
+        return 0
+
+
+def clamp_level(level: str, floor: Optional[str] = None, cap: Optional[str] = None) -> str:
+    i = _level_index(level)
+    if floor:
+        i = max(i, _level_index(floor))
+    if cap:
+        i = min(i, _level_index(cap))
+    return LEVEL_ORDER[i]
+
+
+def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
+                          has_warning: bool, freeze_signal: bool = False) -> str:
+    """
+    Adjust a score-derived risk level to reflect the likelihood of operational
+    (building/facility) impact in Texas, given the dominant hazard.
+    """
+    # High-impact disruptive events: flooding, tropical, severe storms/tornado.
+    if dominant in ('flood', 'tropical', 'severe_storm'):
+        floor = 'High' if has_warning else ('Moderate' if has_alert else None)
+        return clamp_level(base_level, floor=floor, cap='High')
+
+    # Winter weather in Texas: even a minor freeze is highly disruptive.
+    if dominant == 'winter_storm':
+        floor = 'High' if (has_alert or freeze_signal) else 'Moderate'
+        return clamp_level(base_level, floor=floor, cap='High')
+    if dominant == 'extreme_cold':
+        if has_warning or freeze_signal:
+            floor = 'High'
+        elif has_alert:
+            floor = 'Moderate'
+        else:
+            floor = None
+        return clamp_level(base_level, floor=floor, cap='High')
+
+    # Extreme heat: significant but lower likelihood of disrupting indoor ops.
+    if dominant == 'extreme_heat':
+        floor = 'Medium' if has_alert else None
+        return clamp_level(base_level, floor=floor, cap='Moderate')
+
+    # Fire weather: mostly indirect impact to building operations.
+    if dominant == 'fire_weather':
+        floor = 'Medium' if has_warning else None
+        return clamp_level(base_level, floor=floor, cap='Moderate')
+
+    if dominant == 'wind':
+        return clamp_level(base_level, cap='Moderate')
+    if dominant in ('fog_dust', 'air_quality'):
+        return clamp_level(base_level, cap='Medium')
+
+    return base_level
+
+
+def fmt_forecast_date(iso_or_dt) -> str:
+    """Format an ISO string or datetime as e.g. 'Friday, June 24th'."""
+    try:
+        dt = iso_or_dt if isinstance(iso_or_dt, datetime) else \
+            datetime.fromisoformat(str(iso_or_dt).replace('Z', '+00:00'))
+        d = dt.day
+        suffix = 'th' if 10 <= d % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d % 10, 'th')
+        return dt.strftime(f"%A, %B {d}{suffix}")
+    except Exception:
+        return "Date unavailable"
+
+
 def fmt_time(dt, pattern: str) -> str:
     """
     Cross-platform strftime.
@@ -628,6 +702,8 @@ record rather than raising, so a single outage never aborts the run.
 """
 
 import time
+from collections import defaultdict
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 import requests
@@ -728,9 +804,26 @@ class WeatherDataAgent:
                 'max_rh': peak('relativeHumidity', max),
                 'max_wind_gust_mph': (lambda v: round(v * 0.621371, 0) if v is not None else None)(
                     peak('windGust', max)),
+                'daily_precip_in': self._daily_precip(gp),
             }
         except Exception:
             return {}
+
+    @staticmethod
+    def _daily_precip(gp: Dict) -> Dict[str, float]:
+        """Aggregate gridpoint QPF (mm) into projected per-day rainfall (inches)."""
+        totals = defaultdict(float)
+        for v in gp.get('quantitativePrecipitation', {}).get('values', []):
+            val = v.get('value')
+            valid = (v.get('validTime') or '').split('/')[0]
+            if val is None or not valid:
+                continue
+            try:
+                dt = datetime.fromisoformat(valid.replace('Z', '+00:00'))
+            except Exception:
+                continue
+            totals[HZ.fmt_forecast_date(dt)] += val
+        return {date: round(mm / 25.4, 2) for date, mm in totals.items()}
 
     # --------------------------------------------------------------- tropical
     def fetch_active_tropical_systems(self) -> Dict:
@@ -1100,8 +1193,21 @@ class RiskAnalysisAgent:
         metrics = self._derive_metrics(forecasts, grid)
         forecast_hazards = HZ.detect_forecast_hazards(all_text)
         score = self.calculate_severity_score(alerts, all_text, metrics)
-        risk_level, risk_desc = self.determine_risk_level(score)
         dominant = self._dominant_hazard(alerts, forecast_hazards, metrics, season)
+
+        # Convert the raw score to a base level, then adjust it for the
+        # likelihood of *operational* impact in Texas given the dominant hazard.
+        base_level, _ = self.determine_risk_level(score)
+        has_alert = bool(alerts)
+        has_warning = any(HZ.severity_rank(a.get('severity')) >= 3
+                          or 'warning' in (a.get('event', '').lower()) for a in alerts)
+        low_text = all_text.lower()
+        freeze_signal = (
+            (metrics.get('min_temp_f') is not None and metrics['min_temp_f'] <= 32) or
+            (metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 32) or
+            any(w in low_text for w in ('freeze', 'freezing', 'ice', 'sleet', 'snow', 'wintry')))
+        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning, freeze_signal)
+        risk_desc = self.risk_thresholds[risk_level]['description']
         infrastructure = self.analyze_infrastructure_impacts(dominant, all_text, metrics)
         timeline = self.extract_timeline(forecasts, alerts)
         tiles = self.build_metric_tiles(dominant, alerts, metrics, timeline)
@@ -1112,6 +1218,7 @@ class RiskAnalysisAgent:
 
         return {
             'county': county_name,
+            'city': cfg['city'],
             'region': cfg['region'],
             'coastal': cfg['coastal'],
             'risk_level': risk_level,
@@ -1174,13 +1281,11 @@ PROMPT_EXECUTIVE_SUMMARY = """You are generating an executive summary for Texas 
 INPUT DATA (JSON):
 {json_data}
 
-Write ONE paragraph (4-6 sentences) giving a 30,000-foot view:
-1. The overall threat level across Texas and the current season context.
-2. The specific dominant hazards present (name them explicitly).
-3. Which counties/regions face the highest likelihood of operational impacts.
-4. Key infrastructure concerns (power grid, highways, water systems, coastal/evacuation if tropical).
-
-Lead with the most widespread/severe hazard. Be concise and factual. Do NOT include recommendations, advice, or action items. Output only the paragraph text."""
+Output 4 to 7 SHORT, quick-hitting bullet lines (each on its own line, beginning with "- "). Bold the most important terms using **double asterisks** (county names, risk levels, hazards, key numbers). Cover:
+- A lead bullet stating the overall statewide threat level and how many counties are at High/Moderate likelihood of operational impacts.
+- One bullet per county that has a notable threat, naming the county, its risk level, and its dominant hazard.
+- A bullet on the key infrastructure concern (power grid, highways, water systems, evacuation if tropical).
+Be concise and factual. Do NOT include recommendations or advice. Output only the bullet lines."""
 
 PROMPT_COUNTY_NARRATIVE = """You are describing the weather situation for one Texas county as part of a year-round threat assessment.
 
@@ -1211,53 +1316,111 @@ class NarrativeGenerationAgent:
 
     # ------------------------------------------------------ executive summary
     def generate_executive_summary(self, analyses: List[Dict], season: str,
-                                   tropical_systems: List[Dict]) -> str:
+                                   tropical_systems: List[Dict]) -> List[str]:
+        """Return a list of quick-hitting bullet strings (with **bold** markup)."""
         print("Generating executive summary...")
-        risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
-        for a in analyses:
-            risk_dist[a['risk_level']].append(a['county'])
-
-        hazard_counties: Dict[str, List[str]] = {}
-        for a in analyses:
-            hazard_counties.setdefault(a['dominant_hazard_name'], []).append(a['county'])
-
-        input_data = {
-            'season': season,
-            'risk_distribution': risk_dist,
-            'highest_risk_counties': [a['county'] for a in analyses[:3]],
-            'dominant_hazards_by_county': hazard_counties,
-            'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
-            'total_counties': len(analyses),
-        }
-        data_json = json.dumps(input_data, indent=2)
-
         if self.llm_available:
             try:
-                return self.call_llm(PROMPT_EXECUTIVE_SUMMARY, data_json)
+                risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
+                for a in analyses:
+                    risk_dist[a['risk_level']].append(a['county'])
+                input_data = {
+                    'season': season,
+                    'risk_distribution': risk_dist,
+                    'counties': [{'county': a['county'], 'city': a['city'],
+                                  'risk_level': a['risk_level'],
+                                  'dominant_hazard': a['dominant_hazard_name']} for a in analyses],
+                    'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
+                }
+                raw = self.call_llm(PROMPT_EXECUTIVE_SUMMARY, json.dumps(input_data, indent=2))
+                bullets = self._parse_bullet_lines(raw)
+                if len(bullets) >= 2:
+                    return bullets
             except Exception as e:
                 print(f"LLM call failed: {e}; using template")
-        return self._template_summary(risk_dist, hazard_counties, season, tropical_systems)
+        return self._template_summary(analyses, season, tropical_systems)
 
-    def _template_summary(self, risk_dist, hazard_counties, season, tropical_systems) -> str:
-        parts = [f"Current season: {season}."]
-        if risk_dist['High']:
-            parts.append(f"High likelihood of operational impacts across {', '.join(risk_dist['High'])} "
-                         f"{'County' if len(risk_dist['High']) == 1 else 'Counties'}.")
-        elif risk_dist['Moderate']:
-            parts.append(f"Moderate likelihood of operational impacts developing across {', '.join(risk_dist['Moderate'])}.")
+    @staticmethod
+    def _parse_bullet_lines(raw: str) -> List[str]:
+        bullets = []
+        for line in raw.splitlines():
+            line = line.strip().lstrip('-*•').strip()
+            if line:
+                bullets.append(line)
+        return bullets
+
+    def _template_summary(self, analyses: List[Dict], season: str,
+                          tropical_systems: List[Dict]) -> List[str]:
+        risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
+        for a in analyses:
+            risk_dist[a['risk_level']].append(a)
+
+        bullets: List[str] = []
+
+        # Lead bullet — overall posture, scaled by counts.
+        n_high, n_mod = len(risk_dist['High']), len(risk_dist['Moderate'])
+        if n_high:
+            overall = 'High'
+        elif n_mod:
+            overall = 'Elevated'
+        elif risk_dist['Medium']:
+            overall = 'Moderate'
         else:
-            parts.append("Weather conditions being monitored statewide with limited operational impacts anticipated.")
+            overall = 'Low'
+        lead = f"Statewide threat level: **{overall}** ({season})."
+        tallies = []
+        if n_high:
+            tallies.append(f"**{n_high}** at High")
+        if n_mod:
+            tallies.append(f"**{n_mod}** at Moderate")
+        if tallies:
+            lead += " " + " and ".join(tallies) + " likelihood of operational impacts."
+        else:
+            lead += " No counties at elevated likelihood of operational impacts."
+        bullets.append(lead)
 
-        hz = [f"{name} ({', '.join(cs)})" for name, cs in hazard_counties.items()
-              if name != 'General Weather Watch']
-        if hz:
-            parts.append("Dominant hazards: " + "; ".join(hz) + ".")
+        # Active tropical systems (basin-wide).
         if tropical_systems:
-            parts.append("Active tropical system(s) in the basin: " +
-                         ", ".join(s['name'] for s in tropical_systems) +
-                         "; coastal counties under heightened monitoring.")
-        parts.append("Anticipated infrastructure concerns include the power grid, major highway corridors, and water systems where applicable.")
-        return " ".join(parts)
+            names = ', '.join(s['name'] for s in tropical_systems)
+            bullets.append(f"**Active tropical system(s):** {names} — coastal exposure under heightened monitoring.")
+
+        # One bullet per county with a notable threat (scales the summary length).
+        notable = [a for a in analyses if a['risk_level'] != 'Low' or a['active_alerts']]
+        for a in notable:
+            metric = self._metric_tag(a)
+            bullets.append(
+                f"**{a['county']} ({a['city']})**: **{a['risk_level']}** — {a['dominant_hazard_name']}"
+                + (f", {metric}" if metric else "") + ".")
+
+        # Aggregate infrastructure concern across elevated counties.
+        concerns = set()
+        for a in analyses:
+            if a['risk_level'] in ('High', 'Moderate'):
+                for key in ('public_safety', 'utilities', 'transportation'):
+                    if a['infrastructure_impacts'].get(key):
+                        concerns.add(key)
+        if concerns:
+            label = {'public_safety': 'public safety', 'utilities': 'the power grid and water systems',
+                     'transportation': 'major highway corridors'}
+            bullets.append("**Key concerns:** anticipated impacts to " +
+                           ", ".join(label[c] for c in ('public_safety', 'utilities', 'transportation') if c in concerns) + ".")
+        return bullets
+
+    @staticmethod
+    def _metric_tag(a: Dict) -> str:
+        m = a.get('metrics', {})
+        d = a['dominant_hazard']
+        if d == 'extreme_heat' and m.get('max_heat_index_f'):
+            return f"heat index to **{int(m['max_heat_index_f'])}°F**"
+        if d == 'extreme_cold' and m.get('min_wind_chill_f') is not None:
+            return f"wind chill to **{int(m['min_wind_chill_f'])}°F**"
+        if d == 'fire_weather' and m.get('min_rh') is not None:
+            return f"RH to **{int(m['min_rh'])}%**"
+        if d in ('severe_storm', 'tropical', 'wind') and m.get('max_wind_gust_mph'):
+            return f"gusts to **{int(m['max_wind_gust_mph'])} mph**"
+        if a['active_alerts']:
+            return f"**{a['active_alerts']}** active alert(s)"
+        return ""
 
     # ------------------------------------------------------ county narrative
     def generate_county_narrative(self, analysis: Dict) -> str:
@@ -1398,10 +1561,16 @@ def _parse_words(text: str) -> List[Word]:
 
 
 class InfographicGenerator:
-    # Layout constants (pixels).
-    W = 1100
-    MARGIN = 70
-    CARD_RADIUS = 18
+    # Layout constants (pixels). Sized so text remains legible when the image is
+    # placed full-page in the PDF.
+    W = 1080
+    MARGIN = 58
+    CARD_RADIUS = 24
+    # Card geometry (shared by the size estimate in generate() and _draw_card()).
+    PAD = 32
+    BANNER_H = 86
+    TILE_H = 196
+    TIPS_H = 72
     NAVY = (15, 32, 64)
     NAVY_LIGHT = (28, 52, 92)
     WHITE = (255, 255, 255)
@@ -1456,62 +1625,64 @@ class InfographicGenerator:
             cx += space
 
     # --- card pieces --------------------------------------------------------
+    def _card_height(self, has_tips: bool) -> int:
+        tips = (self.PAD + self.TIPS_H) if has_tips else self.PAD
+        return self.BANNER_H + self.PAD + self.TILE_H + tips
+
     def _draw_card(self, img, draw, x, y, w, banner_text, banner_color,
                    tiles: List[Dict], tips: List[str]) -> int:
         """Render the hazard card; return its bottom y coordinate."""
-        pad = 26
-        banner_h = 64
-        tile_h = 150
-        tips_h = 56 if tips else 0
-        card_h = banner_h + pad + tile_h + (pad + tips_h if tips else pad)
+        pad, banner_h, tile_h = self.PAD, self.BANNER_H, self.TILE_H
+        tips_h = self.TIPS_H if tips else 0
+        card_h = self._card_height(bool(tips))
         # Card body.
         draw.rounded_rectangle([x, y, x + w, y + card_h], radius=self.CARD_RADIUS, fill=self.NAVY)
         # Banner (rounded top, themed color).
         draw.rounded_rectangle([x, y, x + w, y + banner_h + self.CARD_RADIUS],
                                radius=self.CARD_RADIUS, fill=banner_color)
         draw.rectangle([x, y + banner_h, x + w, y + banner_h + self.CARD_RADIUS], fill=self.NAVY)
-        bf, bsize = self._fit_font(draw, banner_text, w - 44, 30, bold=True, min_size=16)
+        bf, bsize = self._fit_font(draw, banner_text, w - 56, 40, bold=True, min_size=20)
         btw = self._tw(draw, banner_text, bf)
-        draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 6) / 2), banner_text, font=bf, fill=self.WHITE)
+        draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 8) / 2), banner_text, font=bf, fill=self.WHITE)
 
         # Tiles.
         ty = y + banner_h + pad
         n = max(1, len(tiles))
-        gap = 20
+        gap = 24
         tw = (w - 2 * pad - (n - 1) * gap) / n
         for i, tile in enumerate(tiles):
             tx = x + pad + i * (tw + gap)
-            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=12, fill=self.TILE)
+            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=16, fill=self.TILE)
             # Accent top bar.
-            draw.rounded_rectangle([tx + 16, ty + 16, tx + tw - 16, ty + 22],
-                                   radius=3, fill=tuple(tile.get('bar', banner_color)))
+            draw.rounded_rectangle([tx + 22, ty + 22, tx + tw - 22, ty + 31],
+                                   radius=4, fill=tuple(tile.get('bar', banner_color)))
             # Value (auto-shrink to fit).
             val = str(tile.get('value', ''))
-            vsize = 46
+            vsize = 64
             vf = self.fonts.get(vsize, bold=True)
-            while self._tw(draw, val, vf) > tw - 28 and vsize > 20:
+            while self._tw(draw, val, vf) > tw - 36 and vsize > 26:
                 vsize -= 2
                 vf = self.fonts.get(vsize, bold=True)
             vtw = self._tw(draw, val, vf)
-            draw.text((tx + (tw - vtw) / 2, ty + 48), val, font=vf, fill=self.WHITE)
+            draw.text((tx + (tw - vtw) / 2, ty + 62), val, font=vf, fill=self.WHITE)
             # Label.
-            lf = self.fonts.get(16, bold=True)
+            lf = self.fonts.get(22, bold=True)
             label = str(tile.get('label', ''))
             ltw = self._tw(draw, label, lf)
-            draw.text((tx + (tw - ltw) / 2, ty + tile_h - 36), label, font=lf, fill=self.TILE_LABEL)
+            draw.text((tx + (tw - ltw) / 2, ty + tile_h - 46), label, font=lf, fill=self.TILE_LABEL)
 
         # Tips strip.
         if tips:
             sy = ty + tile_h + pad
-            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=10, fill=self.NAVY_LIGHT)
-            tip_text = '   •   '.join(tips)
-            tf = self.fonts.get(17)
+            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=14, fill=self.NAVY_LIGHT)
+            tip_text = '    •    '.join(tips)
+            tf = self.fonts.get(22)
             # Trim tips that would overflow.
-            while self._tw(draw, tip_text, tf) > w - 2 * pad - 30 and '   •   ' in tip_text:
+            while self._tw(draw, tip_text, tf) > w - 2 * pad - 40 and '    •    ' in tip_text:
                 tips = tips[:-1]
-                tip_text = '   •   '.join(tips)
+                tip_text = '    •    '.join(tips)
             ttw = self._tw(draw, tip_text, tf)
-            draw.text((x + (w - ttw) / 2, sy + (tips_h - 21) / 2), tip_text, font=tf, fill=(214, 224, 235))
+            draw.text((x + (w - ttw) / 2, sy + (tips_h - 26) / 2), tip_text, font=tf, fill=(214, 224, 235))
 
         return y + card_h
 
@@ -1539,10 +1710,10 @@ class InfographicGenerator:
         scratch = Image.new('RGB', (10, 10))
         sdraw = ImageDraw.Draw(scratch)
         body_w = self.W - 2 * self.MARGIN
-        bullet_indent = 34
-        line_h = 30
-        bullet_gap = 14
-        bullet_size = 19
+        bullet_indent = 46
+        bullet_size = 28
+        line_h = 42
+        bullet_gap = 22
 
         wrapped_bullets = []
         bullets_h = 0
@@ -1551,31 +1722,31 @@ class InfographicGenerator:
             wrapped_bullets.append(lines)
             bullets_h += len(lines) * line_h + bullet_gap
 
+        # Resolve title font up front so the layout can reserve the right height.
+        title = f"Executive Report: {theme['name']}"
+        tf, tsize = self._fit_font(sdraw, title, self.W - 2 * self.MARGIN, 54, bold=True, min_size=30)
+
         # Compute total canvas height.
-        top = 56
-        title_h = 54
-        subtitle_h = 40
-        card_top = top + title_h + subtitle_h + 18
-        # Card height is computed inside _draw_card; estimate to size canvas.
-        banner_h, tile_h, pad = 64, 150, 26
-        tips_h = 56 if analysis.get('safety_guidance') else 0
-        card_h = banner_h + pad + tile_h + (pad + tips_h if tips_h else pad)
-        bullets_top = card_top + card_h + 40
-        section_label_h = 40
-        total_h = int(bullets_top + section_label_h + bullets_h + 60)
+        top = 64
+        title_h = tsize + 16
+        subtitle_h = 50
+        card_top = top + title_h + subtitle_h + 16
+        card_h = self._card_height(bool(analysis.get('safety_guidance')))
+        bullets_top = card_top + card_h + 48
+        section_label_h = 52
+        total_h = int(bullets_top + section_label_h + bullets_h + 70)
 
         img = Image.new('RGB', (self.W, total_h), self.WHITE)
         draw = ImageDraw.Draw(img)
 
         # Title + subtitle.
-        title = f"Executive Report: {theme['name']}"
-        tf, _ = self._fit_font(draw, title, self.W - 2 * self.MARGIN, 38, bold=True, min_size=22)
         ttw = self._tw(draw, title, tf)
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
-        sub = f"{county} County, TX ({analysis['region']}) — {HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}"
-        sf = self.fonts.get(20)
+        sub = (f"{county} County ({analysis['city']}), TX — "
+               f"{HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}")
+        sf = self.fonts.get(26)
         stw = self._tw(draw, sub, sf)
-        draw.text(((self.W - stw) / 2, top + title_h - 4), sub, font=sf, fill=self.GRAY)
+        draw.text(((self.W - stw) / 2, top + title_h), sub, font=sf, fill=self.GRAY)
 
         # Card.
         banner_text = f"{analysis['dominant_hazard_name'].upper()}  |  {county.upper()} COUNTY, TX"
@@ -1585,15 +1756,14 @@ class InfographicGenerator:
 
         # Bullet section.
         by = bullets_top
-        slf = self.fonts.get(22, bold=True)
+        slf = self.fonts.get(32, bold=True)
         draw.text((self.MARGIN, by), "Key Points", font=slf, fill=self.INK)
-        # Accent underline.
-        draw.rectangle([self.MARGIN, by + 32, self.MARGIN + 120, by + 36], fill=banner_color)
+        draw.rectangle([self.MARGIN, by + 46, self.MARGIN + 160, by + 52], fill=banner_color)
         by += section_label_h
 
         for lines in wrapped_bullets:
-            draw.ellipse([self.MARGIN + 4, by + 9, self.MARGIN + 13, by + 18], fill=banner_color)
-            for li, line in enumerate(lines):
+            draw.ellipse([self.MARGIN + 6, by + 12, self.MARGIN + 20, by + 26], fill=banner_color)
+            for line in lines:
                 self._draw_line(draw, self.MARGIN + bullet_indent, by, line, bullet_size, self.INK)
                 by += line_h
             by += bullet_gap
@@ -1675,6 +1845,7 @@ dominant-hazard + key metrics, an activity-flag note for heat, and optional
 embedding of the generated county infographic.
 """
 
+import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -1682,10 +1853,60 @@ from typing import Dict, List, Optional
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.units import inch
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image as RLImage)
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+                                PageBreak, Image as RLImage)
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 
+
+
+def _md_bold(text: str) -> str:
+    """Convert **markdown bold** to reportlab markup, escaping XML specials."""
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+
+
+# Season-aware risk framework. Levels reflect the likelihood of impacts to
+# building/facility operations, weighted for Texas conditions and the season.
+def risk_framework(season: str) -> Dict:
+    common = {
+        'High': 'Flooding, tropical systems, tornadoes, and severe thunderstorms — '
+                'events that commonly force facility closures, structural damage, or evacuations.',
+        'Moderate': 'Extreme heat. Significant potential impact, but a lower likelihood of '
+                    'disrupting climate-controlled operations given regional acclimatization; '
+                    'elevated mainly if power-grid reliability is threatened.',
+        'Medium': 'High wind, fire weather (Red Flag), and air-quality concerns with localized '
+                  'or indirect operational effects.',
+        'Low': 'Routine seasonal conditions with minimal anticipated impact to operations.',
+        'note': 'Note: any unseasonable freeze or icing event would be elevated to High given '
+                'Texas’s limited cold-weather infrastructure and rare exposure.',
+    }
+    if season == 'Winter':
+        return {
+            'High': 'Ice, freezing rain, and hard freezes — even brief or minor events — given '
+                    'Texas’s limited cold-weather infrastructure and rare exposure; also '
+                    'flooding and severe storms.',
+            'Moderate': 'Prolonged cold without precipitation, or high-wind events.',
+            'Medium': 'Marginal cold, fog, or air-quality concerns with limited operational effect.',
+            'Low': 'Routine winter conditions with minimal anticipated impact to operations.',
+            'note': 'Note: extreme heat is treated as a lower-likelihood operational threat and is '
+                    'capped at Moderate.',
+        }
+    if season == 'Spring':
+        return {
+            'High': 'Tornadoes, severe thunderstorms, large hail, and flooding — the dominant '
+                    'spring threats — which commonly force closures or damage.',
+            'Moderate': 'Early-season extreme heat and high-wind events.',
+            'Medium': 'Fire weather (Red Flag), fog, and air-quality concerns.',
+            'Low': 'Routine spring conditions with minimal anticipated impact to operations.',
+            'note': common['note'],
+        }
+    if season == 'Fall':
+        c = dict(common)
+        c['High'] = ('Tropical systems, flooding, tornadoes, and severe thunderstorms — events '
+                     'that commonly force facility closures, damage, or evacuations.')
+        return c
+    return common  # Summer
 
 
 def _fmt_alert_dt(iso: str) -> Optional[str]:
@@ -1757,7 +1978,14 @@ class PDFReportGenerator:
                 groups[date]['night'] = cond
         return [{'date': d, **v} for d, v in groups.items()]
 
-    def generate_pdf(self, analyses: List[Dict], executive_summary: str,
+    @staticmethod
+    def _highest_level(analyses: List[Dict]) -> str:
+        for level in ('High', 'Moderate', 'Medium', 'Low'):
+            if any(a['risk_level'] == level for a in analyses):
+                return level
+        return 'Low'
+
+    def generate_pdf(self, analyses: List[Dict], executive_summary: List[str],
                      narratives: Dict[str, Dict], data_quality: Dict, season: str,
                      timestamp: datetime, filename: str,
                      infographics: Optional[Dict[str, str]] = None):
@@ -1771,17 +1999,35 @@ class PDFReportGenerator:
 
         story.append(Paragraph(PDF_CONFIG['title'], self.title_style))
         story.append(Paragraph(PDF_CONFIG['subtitle'], self.subtitle_style))
-        story.append(Paragraph(f"<b>Season Context:</b> {season}", self.body_style))
-        story.append(Spacer(1, 0.12 * inch))
+        story.append(Paragraph(f"<b>Season:</b> {season}", self.body_style))
+        story.append(Spacer(1, 0.1 * inch))
         story.append(Paragraph(f"Best available information as of {_fmt_timestamp(timestamp)}", self.body_style))
-        story.append(Spacer(1, 0.25 * inch))
+        story.append(Spacer(1, 0.22 * inch))
 
-        # Executive summary.
-        story.append(Paragraph("EXECUTIVE SUMMARY", self.heading_style))
-        story.append(Paragraph(executive_summary, self.body_style))
-        story.append(Spacer(1, 0.2 * inch))
+        # ---- Executive summary: highlighted, bulleted, quick-hitting ----------
+        accent = self.get_risk_color(self._highest_level(analyses))
+        exec_heading = ParagraphStyle('EH', parent=self.heading_style, fontSize=13,
+                                      textColor=accent, spaceBefore=0, spaceAfter=7)
+        exec_bullet = ParagraphStyle('EB', parent=self.body_style, fontSize=11, leading=15,
+                                     leftIndent=12, bulletIndent=0, spaceAfter=5,
+                                     alignment=TA_LEFT, bulletFontSize=11)
+        cell = [Paragraph("EXECUTIVE SUMMARY", exec_heading)]
+        for b in executive_summary:
+            cell.append(Paragraph(_md_bold(b), exec_bullet, bulletText='•'))
+        box = Table([[cell]], colWidths=[doc.width])
+        box.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F2F4F7')),
+            ('BOX', (0, 0), (-1, -1), 0.75, accent),
+            ('LINEBEFORE', (0, 0), (0, -1), 5, accent),
+            ('LEFTPADDING', (0, 0), (-1, -1), 16),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 14),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ]))
+        story.append(box)
+        story.append(Spacer(1, 0.22 * inch))
 
-        # Statewide hazard overview.
+        # ---- Statewide hazard overview (unchanged) ----------------------------
         story.append(Paragraph("STATEWIDE HAZARD OVERVIEW", self.heading_style))
         hazard_map = defaultdict(list)
         for a in analyses:
@@ -1797,19 +2043,28 @@ class PDFReportGenerator:
             story.append(Paragraph(f"<b>Active Tropical Systems (NHC):</b> {names}", self.body_style))
         story.append(Spacer(1, 0.2 * inch))
 
-        # Risk framework.
+        # ---- Risk framework: dynamic by season & Texas operational impact -----
         story.append(Paragraph("RISK FRAMEWORK", self.heading_style))
+        story.append(Paragraph(
+            "Risk levels reflect the likelihood of impacts to building and facility operations, "
+            f"weighted for Texas conditions and the current season (<b>{season}</b>).",
+            self.body_style))
+        story.append(Spacer(1, 0.04 * inch))
+        fw = risk_framework(season)
         for level in ['High', 'Moderate', 'Medium', 'Low']:
-            story.append(Paragraph(f"<b>{level}:</b> {RISK_THRESHOLDS[level]['description']}", self.body_style))
-        story.append(Spacer(1, 0.2 * inch))
+            lvl_style = ParagraphStyle('FW', parent=self.body_style,
+                                       textColor=self.get_risk_color(level))
+            story.append(Paragraph(f"<b>{level}:</b> {fw[level]}", lvl_style))
+        story.append(Paragraph(f"<i>{fw['note']}</i>", self.body_style))
 
-        # County detail.
-        story.append(Paragraph("DETAILED COUNTY ANALYSIS", self.heading_style))
+        # ---- Detailed county analysis: each county starts on a NEW page -------
         for a in analyses:
+            story.append(PageBreak())
             county = a['county']
+            story.append(Paragraph("DETAILED COUNTY ANALYSIS", self.heading_style))
             cstyle = ParagraphStyle('CH', parent=self.heading_style,
-                                    textColor=self.get_risk_color(a['risk_level']), fontSize=12)
-            story.append(Paragraph(f"{county.upper()} COUNTY — {a['region']}", cstyle))
+                                    textColor=self.get_risk_color(a['risk_level']), fontSize=13)
+            story.append(Paragraph(f"{county.upper()} COUNTY — {a['city']}", cstyle))
             story.append(Paragraph(f"<b>Risk Level:</b> {a['risk_level']} &nbsp;|&nbsp; "
                                    f"<b>Dominant Hazard:</b> {a['dominant_hazard_name']}", self.body_style))
 
@@ -1828,7 +2083,7 @@ class PDFReportGenerator:
                 story.append(Paragraph("<b>Key Metrics:</b> " + " &nbsp;•&nbsp; ".join(metric_bits), self.body_style))
             story.append(Spacer(1, 0.08 * inch))
 
-            # Alerts.
+            # Alerts (no per-county source line; sources are cited once at end).
             if a['alerts']:
                 story.append(Paragraph("<b>Active Alerts:</b>", self.body_style))
                 for al in a['alerts']:
@@ -1837,7 +2092,6 @@ class PDFReportGenerator:
                         story.append(Paragraph(f"• {al['event']} — {al['severity']} (Effective: {onset} – {exp})", self.body_style))
                     else:
                         story.append(Paragraph(f"• {al['event']} — {al['severity']}", self.body_style))
-                story.append(Paragraph(f"<i>Source: National Weather Service — {a['nws_office']} Office</i>", self.body_style))
             else:
                 story.append(Paragraph("<b>Active Alerts:</b> None", self.body_style))
             story.append(Spacer(1, 0.08 * inch))
@@ -1865,38 +2119,45 @@ class PDFReportGenerator:
                 story.append(Paragraph("• Minimal infrastructure impact anticipated", self.body_style))
             story.append(Spacer(1, 0.08 * inch))
 
-            # Extended forecast.
+            # Extended forecast with projected daily rainfall.
             if a['forecasts']:
-                story.append(Paragraph("<b>Extended Forecast:</b>", self.body_style))
+                story.append(Paragraph("<b>Extended Forecast (with projected rainfall):</b>", self.body_style))
+                precip = m.get('daily_precip_in') or {}
                 for fday in self._consolidate_forecast(a['forecasts']):
                     hi = f"High {fday['high']}°F" if fday['high'] is not None else ""
                     lo = f"Low {fday['low']}°F" if fday['low'] is not None else ""
                     temp = f"{hi}, {lo}" if hi and lo else (hi or lo)
                     conds = " / ".join([c for c in (fday['day'], fday['night']) if c]) or "Conditions unavailable"
-                    story.append(Paragraph(f"• {fday['date']}: {temp} — {conds}", self.body_style))
+                    rain = precip.get(fday['date'])
+                    rain_str = f" — Rain {rain:.2f}\"" if isinstance(rain, (int, float)) and rain >= 0.01 else " — Rain 0.00\""
+                    story.append(Paragraph(f"• {fday['date']}: {temp} — {conds}{rain_str}", self.body_style))
 
-            # Embed infographic if present.
+            # Infographic on its OWN page, scaled as large as the page allows.
             if county in infographics:
                 try:
-                    story.append(Spacer(1, 0.12 * inch))
                     img = RLImage(infographics[county])
-                    max_w = doc.width
-                    scale = min(1.0, max_w / img.imageWidth)
+                    # Fit within the frame's usable area (default frame padding is
+                    # 6pt per side); leave a small safety margin.
+                    avail_w = doc.width - 16
+                    avail_h = doc.height - 16
+                    scale = min(avail_w / img.imageWidth, avail_h / img.imageHeight)
                     img.drawWidth = img.imageWidth * scale
                     img.drawHeight = img.imageHeight * scale
+                    story.append(PageBreak())
                     story.append(img)
                 except Exception as e:
                     print(f"Could not embed infographic for {county}: {e}")
 
-            story.append(Spacer(1, 0.2 * inch))
-
-        # Footer.
-        story.append(Spacer(1, 0.25 * inch))
+        # ---- Data sources: cited once for the entire report -------------------
+        story.append(PageBreak())
+        story.append(Paragraph("DATA SOURCES & METHODOLOGY", self.heading_style))
         story.append(Paragraph(
-            "<b>Data Sources:</b> National Weather Service (NWS) alerts and gridpoint forecasts; "
-            "National Hurricane Center (NHC) active-storm feed; National Oceanic and Atmospheric "
-            "Administration (NOAA). Heat index, wind chill, and activity-flag (WBGT) values are "
-            "computed from forecast data using standard meteorological formulas.", self.body_style))
+            "All weather data is sourced from the National Weather Service (NWS) alert and "
+            "gridpoint forecast APIs and the National Hurricane Center (NHC) active-storm feed "
+            "(NOAA). Heat index, wind chill, and activity-flag (estimated WBGT) values are computed "
+            "from forecast data using standard meteorological formulas. Risk levels reflect the "
+            "likelihood of impacts to building and facility operations, weighted for Texas "
+            "conditions and the current season.", self.body_style))
 
         doc.build(story, onFirstPage=self._footer, onLaterPages=self._footer)
         print(f"✓ PDF report generated: {filename}")
@@ -1911,16 +2172,28 @@ Bundled sample data for demo mode and offline testing.
 
 Produces records in the exact shape emitted by WeatherDataAgent so the analysis,
 narrative, infographic, and PDF stages can run end-to-end without network access.
-The scenario is a multi-hazard summer day designed to exercise every code path:
-extreme heat, a tropical system, flooding, fire weather, and severe storms.
+The scenario is a multi-hazard summer day across the six monitored counties,
+designed to exercise the season-aware risk logic: extreme heat (which is capped
+at Moderate operational likelihood), a flash-flood warning (High), high wind and
+fire weather (Moderate), and forecast-only heat (Low/Medium).
 """
 
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 
+
 def _iso(hours_from_now: float) -> str:
     return (datetime.now() + timedelta(hours=hours_from_now)).astimezone().isoformat()
+
+
+def _precip(daily_inches: List[float]) -> Dict[str, float]:
+    """Map projected daily rainfall to the same date labels the forecast uses."""
+    out = {}
+    for i, inches in enumerate(daily_inches):
+        dt = datetime.now() + timedelta(hours=i * 24 + 6)
+        out[HZ.fmt_forecast_date(dt)] = inches
+    return out
 
 
 def _alerts(county: str, alerts: List[Dict]) -> Dict:
@@ -1949,7 +2222,7 @@ def _periods(high: int, low: int, day_cond: str, night_cond: str) -> List[Dict]:
 def build_sample_data() -> Tuple[List[Dict], Dict]:
     data: List[Dict] = []
 
-    # --- Travis: Extreme Heat Warning (mirrors the reference infographic) ----
+    # --- Travis (Austin): Excessive Heat Warning -> heat is capped at Moderate -
     data.append(_alerts('Travis', [{
         'event': 'Excessive Heat Warning', 'severity': 'Extreme', 'urgency': 'Expected',
         'certainty': 'Likely', 'headline': 'Excessive Heat Warning until 8 PM CDT',
@@ -1959,65 +2232,46 @@ def build_sample_data() -> Tuple[List[Dict], Dict]:
     data.append(_forecast('Travis', _periods(101, 78, 'Sunny and Hot', 'Clear'),
                           {'max_temp_f': 101, 'min_temp_f': 78, 'max_heat_index_f': 113,
                            'min_wind_chill_f': None, 'min_rh': 38, 'max_rh': 60,
-                           'max_wind_gust_mph': 18}))
+                           'max_wind_gust_mph': 18, 'daily_precip_in': _precip([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}))
 
-    # --- Bexar: Heat Advisory --------------------------------------------------
+    # --- Bexar (San Antonio): Heat Advisory -----------------------------------
     data.append(_alerts('Bexar', [{
         'event': 'Heat Advisory', 'severity': 'Moderate', 'urgency': 'Expected', 'certainty': 'Likely',
         'headline': 'Heat Advisory in effect', 'description': 'Heat index values up to 106.',
         'instruction': '', 'onset': _iso(3), 'expires': _iso(9)}]))
     data.append(_forecast('Bexar', _periods(99, 77, 'Hot and Humid', 'Mostly Clear'),
                           {'max_temp_f': 99, 'min_temp_f': 77, 'max_heat_index_f': 106,
-                           'min_wind_chill_f': None, 'min_rh': 45, 'max_rh': 70, 'max_wind_gust_mph': 15}))
+                           'min_wind_chill_f': None, 'min_rh': 45, 'max_rh': 70,
+                           'max_wind_gust_mph': 15, 'daily_precip_in': _precip([0.0, 0.1, 0.2, 0.0, 0.0, 0.0])}))
 
-    # --- McLennan: no alert, forecast-driven heat -----------------------------
+    # --- McLennan (Waco): no alert, forecast-driven heat ----------------------
     data.append(_alerts('McLennan', []))
     data.append(_forecast('McLennan', _periods(97, 75, 'Sunny', 'Clear'),
                           {'max_temp_f': 97, 'min_temp_f': 75, 'max_heat_index_f': 102,
-                           'min_wind_chill_f': None, 'min_rh': 40, 'max_rh': 65, 'max_wind_gust_mph': 12}))
+                           'min_wind_chill_f': None, 'min_rh': 40, 'max_rh': 65,
+                           'max_wind_gust_mph': 12, 'daily_precip_in': _precip([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}))
 
-    # --- Nueces: Tropical Storm Warning + Storm Surge -------------------------
-    data.append(_alerts('Nueces', [
-        {'event': 'Tropical Storm Warning', 'severity': 'Severe', 'urgency': 'Immediate',
-         'certainty': 'Likely', 'headline': 'Tropical Storm Warning for the Coastal Bend',
-         'description': 'Tropical storm conditions with damaging winds and heavy rain expected. '
-                        'Power outages likely.',
-         'instruction': 'Follow advice of local officials.', 'onset': _iso(6), 'expires': _iso(36)},
-        {'event': 'Storm Surge Watch', 'severity': 'Severe', 'urgency': 'Expected', 'certainty': 'Possible',
-         'headline': 'Storm Surge Watch', 'description': 'Life-threatening storm surge possible.',
-         'instruction': '', 'onset': _iso(8), 'expires': _iso(40)}]))
-    data.append(_forecast('Nueces', _periods(88, 76, 'Tropical Storm', 'Heavy Rain'),
-                          {'max_temp_f': 88, 'min_temp_f': 76, 'max_heat_index_f': 95,
-                           'min_wind_chill_f': None, 'min_rh': 80, 'max_rh': 98, 'max_wind_gust_mph': 62}))
+    # --- Tarrant (Fort Worth): High Wind Warning ------------------------------
+    data.append(_alerts('Tarrant', [{
+        'event': 'High Wind Warning', 'severity': 'Moderate', 'urgency': 'Expected', 'certainty': 'Likely',
+        'headline': 'High Wind Warning', 'description': 'West winds 25 to 35 mph with gusts up to 55 mph.',
+        'instruction': '', 'onset': _iso(2), 'expires': _iso(14)}]))
+    data.append(_forecast('Tarrant', _periods(95, 74, 'Windy', 'Breezy'),
+                          {'max_temp_f': 95, 'min_temp_f': 74, 'max_heat_index_f': 99,
+                           'min_wind_chill_f': None, 'min_rh': 30, 'max_rh': 55,
+                           'max_wind_gust_mph': 55, 'daily_precip_in': _precip([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}))
 
-    # --- Cameron: Flash Flood Watch -------------------------------------------
-    data.append(_alerts('Cameron', [{
-        'event': 'Flash Flood Watch', 'severity': 'Severe', 'urgency': 'Expected', 'certainty': 'Possible',
-        'headline': 'Flash Flood Watch for the Rio Grande Valley',
-        'description': 'Heavy rainfall may lead to flash flooding of low-water crossings.',
-        'instruction': 'Turn around, don\'t drown.', 'onset': _iso(4), 'expires': _iso(28)}]))
-    data.append(_forecast('Cameron', _periods(90, 77, 'Heavy Rain Likely', 'Showers'),
-                          {'max_temp_f': 90, 'min_temp_f': 77, 'max_heat_index_f': 99,
-                           'min_wind_chill_f': None, 'min_rh': 75, 'max_rh': 95, 'max_wind_gust_mph': 35}))
-
-    # --- Galveston: Coastal Flood Advisory ------------------------------------
-    data.append(_alerts('Galveston', [{
-        'event': 'Coastal Flood Advisory', 'severity': 'Moderate', 'urgency': 'Expected', 'certainty': 'Likely',
-        'headline': 'Coastal Flood Advisory', 'description': 'Minor coastal flooding of vulnerable areas.',
-        'instruction': '', 'onset': _iso(5), 'expires': _iso(20)}]))
-    data.append(_forecast('Galveston', _periods(91, 80, 'Scattered Storms', 'Partly Cloudy'),
-                          {'max_temp_f': 91, 'min_temp_f': 80, 'max_heat_index_f': 104,
-                           'min_wind_chill_f': None, 'min_rh': 70, 'max_rh': 92, 'max_wind_gust_mph': 30}))
-
-    # --- Harris: Severe Thunderstorm Warning ----------------------------------
+    # --- Harris (Houston): Flash Flood Warning -> High operational likelihood -
     data.append(_alerts('Harris', [{
-        'event': 'Severe Thunderstorm Warning', 'severity': 'Severe', 'urgency': 'Immediate',
-        'certainty': 'Observed', 'headline': 'Severe Thunderstorm Warning',
-        'description': 'Damaging winds to 70 mph and quarter-size hail. Power outages expected.',
-        'instruction': 'Move indoors.', 'onset': _iso(1), 'expires': _iso(3)}]))
-    data.append(_forecast('Harris', _periods(93, 78, 'Severe Storms', 'Thunderstorms'),
-                          {'max_temp_f': 93, 'min_temp_f': 78, 'max_heat_index_f': 107,
-                           'min_wind_chill_f': None, 'min_rh': 65, 'max_rh': 90, 'max_wind_gust_mph': 70}))
+        'event': 'Flash Flood Warning', 'severity': 'Severe', 'urgency': 'Immediate',
+        'certainty': 'Observed', 'headline': 'Flash Flood Warning for Harris County',
+        'description': 'Torrential rainfall producing flash flooding of low-water crossings and '
+                       'underpasses. Power outages possible.',
+        'instruction': 'Turn around, don\'t drown.', 'onset': _iso(1), 'expires': _iso(9)}]))
+    data.append(_forecast('Harris', _periods(90, 77, 'Heavy Rain', 'Showers'),
+                          {'max_temp_f': 90, 'min_temp_f': 77, 'max_heat_index_f': 101,
+                           'min_wind_chill_f': None, 'min_rh': 78, 'max_rh': 96,
+                           'max_wind_gust_mph': 40, 'daily_precip_in': _precip([3.5, 1.2, 0.4, 0.1, 0.0, 0.0])}))
 
     # --- El Paso: Red Flag Warning (fire weather) -----------------------------
     data.append(_alerts('El Paso', [{
@@ -2027,25 +2281,14 @@ def build_sample_data() -> Tuple[List[Dict], Dict]:
         'instruction': 'Avoid outdoor burning.', 'onset': _iso(3), 'expires': _iso(12)}]))
     data.append(_forecast('El Paso', _periods(100, 72, 'Sunny and Windy', 'Clear'),
                           {'max_temp_f': 100, 'min_temp_f': 72, 'max_heat_index_f': 100,
-                           'min_wind_chill_f': None, 'min_rh': 8, 'max_rh': 22, 'max_wind_gust_mph': 45}))
-
-    # --- Tarrant: High Wind Warning -------------------------------------------
-    data.append(_alerts('Tarrant', [{
-        'event': 'High Wind Warning', 'severity': 'Moderate', 'urgency': 'Expected', 'certainty': 'Likely',
-        'headline': 'High Wind Warning', 'description': 'West winds 25 to 35 mph with gusts up to 55 mph.',
-        'instruction': '', 'onset': _iso(2), 'expires': _iso(14)}]))
-    data.append(_forecast('Tarrant', _periods(95, 74, 'Windy', 'Breezy'),
-                          {'max_temp_f': 95, 'min_temp_f': 74, 'max_heat_index_f': 99,
-                           'min_wind_chill_f': None, 'min_rh': 30, 'max_rh': 55, 'max_wind_gust_mph': 55}))
+                           'min_wind_chill_f': None, 'min_rh': 8, 'max_rh': 22,
+                           'max_wind_gust_mph': 45, 'daily_precip_in': _precip([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])}))
 
     data_quality = {
-        'total_requests': 18, 'successful_requests': 18, 'failed_requests': 0,
-        'counties_reporting': ['Travis', 'Bexar', 'McLennan', 'Nueces', 'Cameron',
-                               'Galveston', 'Harris', 'El Paso', 'Tarrant'],
+        'total_requests': 12, 'successful_requests': 12, 'failed_requests': 0,
+        'counties_reporting': ['Travis', 'Bexar', 'McLennan', 'Tarrant', 'Harris', 'El Paso'],
         'counties_partial': [], 'counties_failed': [],
-        'tropical_systems': [{'name': 'Tropical Storm Hilda', 'classification': 'TS',
-                              'intensity_mph': '60', 'pressure_mb': '995', 'basin': 'AL',
-                              'last_update': _iso(0)}],
+        'tropical_systems': [],
     }
     return data, data_quality
 
@@ -2122,10 +2365,11 @@ class WeatherRiskOrchestrator:
 
         # PHASE 4 — INFOGRAPHICS
         print("\nPHASE 4: INFOGRAPHIC GENERATION\n" + "-" * 70)
-        # By default produce infographics for the highest-risk counties.
+        # By default produce infographics for counties with a notable threat
+        # (active alert or at/above Medium likelihood of operational impact).
         if infographic_counties is None:
             infographic_counties = [a['county'] for a in analyses
-                                    if a['severity_score'] >= 26][:5]
+                                    if a['active_alerts'] or a['severity_score'] >= 26]
             if not infographic_counties and analyses:
                 infographic_counties = [analyses[0]['county']]
         infographics: Dict[str, str] = {}
