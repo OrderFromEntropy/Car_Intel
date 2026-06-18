@@ -157,7 +157,6 @@ class RiskAnalysisAgent:
 
         if dominant == 'extreme_heat':
             impacts['utilities'].append('Electric grid strain likely from peak air-conditioning demand')
-            impacts['transportation'].append('Pavement buckling and stressed vehicle cooling systems possible on major routes')
             impacts['public_safety'].append('Elevated risk of heat illness for outdoor workers and vulnerable populations')
         elif dominant == 'tropical':
             impacts['public_safety'].append('Potential evacuations, storm surge inundation, and life-threatening conditions near the coast')
@@ -182,7 +181,6 @@ class RiskAnalysisAgent:
             impacts['transportation'].append('Smoke-related visibility reductions and potential road closures')
         elif dominant == 'wind':
             impacts['utilities'].append('Scattered power outages from downed limbs and lines')
-            impacts['transportation'].append('Hazardous conditions for high-profile vehicles on exposed routes')
         elif dominant == 'fog_dust':
             impacts['transportation'].append('Sharply reduced visibility raising collision risk on highways')
 

@@ -1055,7 +1055,6 @@ class RiskAnalysisAgent:
 
         if dominant == 'extreme_heat':
             impacts['utilities'].append('Electric grid strain likely from peak air-conditioning demand')
-            impacts['transportation'].append('Pavement buckling and stressed vehicle cooling systems possible on major routes')
             impacts['public_safety'].append('Elevated risk of heat illness for outdoor workers and vulnerable populations')
         elif dominant == 'tropical':
             impacts['public_safety'].append('Potential evacuations, storm surge inundation, and life-threatening conditions near the coast')
@@ -1080,7 +1079,6 @@ class RiskAnalysisAgent:
             impacts['transportation'].append('Smoke-related visibility reductions and potential road closures')
         elif dominant == 'wind':
             impacts['utilities'].append('Scattered power outages from downed limbs and lines')
-            impacts['transportation'].append('Hazardous conditions for high-profile vehicles on exposed routes')
         elif dominant == 'fog_dust':
             impacts['transportation'].append('Sharply reduced visibility raising collision risk on highways')
 
@@ -1317,37 +1315,14 @@ class NarrativeGenerationAgent:
     # ------------------------------------------------------ executive summary
     def generate_executive_summary(self, analyses: List[Dict], season: str,
                                    tropical_systems: List[Dict]) -> List[str]:
-        """Return a list of quick-hitting bullet strings (with **bold** markup)."""
-        print("Generating executive summary...")
-        if self.llm_available:
-            try:
-                risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
-                for a in analyses:
-                    risk_dist[a['risk_level']].append(a['county'])
-                input_data = {
-                    'season': season,
-                    'risk_distribution': risk_dist,
-                    'counties': [{'county': a['county'], 'city': a['city'],
-                                  'risk_level': a['risk_level'],
-                                  'dominant_hazard': a['dominant_hazard_name']} for a in analyses],
-                    'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
-                }
-                raw = self.call_llm(PROMPT_EXECUTIVE_SUMMARY, json.dumps(input_data, indent=2))
-                bullets = self._parse_bullet_lines(raw)
-                if len(bullets) >= 2:
-                    return bullets
-            except Exception as e:
-                print(f"LLM call failed: {e}; using template")
-        return self._template_summary(analyses, season, tropical_systems)
+        """
+        Return a list of quick-hitting bullet strings (with **bold** markup).
 
-    @staticmethod
-    def _parse_bullet_lines(raw: str) -> List[str]:
-        bullets = []
-        for line in raw.splitlines():
-            line = line.strip().lstrip('-*•').strip()
-            if line:
-                bullets.append(line)
-        return bullets
+        Built deterministically (not via the LLM) so that every county is
+        guaranteed its own bullet line.
+        """
+        print("Generating executive summary...")
+        return self._template_summary(analyses, season, tropical_systems)
 
     def _template_summary(self, analyses: List[Dict], season: str,
                           tropical_systems: List[Dict]) -> List[str]:
@@ -1384,9 +1359,12 @@ class NarrativeGenerationAgent:
             names = ', '.join(s['name'] for s in tropical_systems)
             bullets.append(f"**Active tropical system(s):** {names} — coastal exposure under heightened monitoring.")
 
-        # One bullet per county with a notable threat (scales the summary length).
-        notable = [a for a in analyses if a['risk_level'] != 'Low' or a['active_alerts']]
-        for a in notable:
+        # One bullet PER county (each on its own line), highest severity first.
+        for a in analyses:
+            if a['risk_level'] == 'Low' and not a['active_alerts']:
+                bullets.append(
+                    f"**{a['county']} ({a['city']})**: **Low** — no significant hazards; monitoring conditions.")
+                continue
             metric = self._metric_tag(a)
             bullets.append(
                 f"**{a['county']} ({a['city']})**: **{a['risk_level']}** — {a['dominant_hazard_name']}"
@@ -1561,15 +1539,17 @@ def _parse_words(text: str) -> List[Word]:
 
 
 class InfographicGenerator:
-    # Layout constants (pixels). Sized so text remains legible when the image is
-    # placed full-page in the PDF.
-    W = 1080
-    MARGIN = 58
+    # Layout constants (pixels). Fonts are large RELATIVE to the canvas width so
+    # that when the image is scaled to fit a PDF page the text stays big and
+    # legible. Content is kept compact so the image is width-constrained (not
+    # shrunk to fit page height).
+    W = 1000
+    MARGIN = 54
     CARD_RADIUS = 24
     # Card geometry (shared by the size estimate in generate() and _draw_card()).
-    PAD = 32
-    BANNER_H = 86
-    TILE_H = 196
+    PAD = 30
+    BANNER_H = 90
+    TILE_H = 190
     TIPS_H = 72
     NAVY = (15, 32, 64)
     NAVY_LIGHT = (28, 52, 92)
@@ -1641,32 +1621,32 @@ class InfographicGenerator:
         draw.rounded_rectangle([x, y, x + w, y + banner_h + self.CARD_RADIUS],
                                radius=self.CARD_RADIUS, fill=banner_color)
         draw.rectangle([x, y + banner_h, x + w, y + banner_h + self.CARD_RADIUS], fill=self.NAVY)
-        bf, bsize = self._fit_font(draw, banner_text, w - 56, 40, bold=True, min_size=20)
+        bf, bsize = self._fit_font(draw, banner_text, w - 56, 46, bold=True, min_size=24)
         btw = self._tw(draw, banner_text, bf)
         draw.text((x + (w - btw) / 2, y + (banner_h - bsize - 8) / 2), banner_text, font=bf, fill=self.WHITE)
 
         # Tiles.
         ty = y + banner_h + pad
         n = max(1, len(tiles))
-        gap = 24
+        gap = 26
         tw = (w - 2 * pad - (n - 1) * gap) / n
         for i, tile in enumerate(tiles):
             tx = x + pad + i * (tw + gap)
-            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=16, fill=self.TILE)
+            draw.rounded_rectangle([tx, ty, tx + tw, ty + tile_h], radius=18, fill=self.TILE)
             # Accent top bar.
-            draw.rounded_rectangle([tx + 22, ty + 22, tx + tw - 22, ty + 31],
-                                   radius=4, fill=tuple(tile.get('bar', banner_color)))
+            draw.rounded_rectangle([tx + 24, ty + 26, tx + tw - 24, ty + 37],
+                                   radius=5, fill=tuple(tile.get('bar', banner_color)))
             # Value (auto-shrink to fit).
             val = str(tile.get('value', ''))
-            vsize = 64
+            vsize = 74
             vf = self.fonts.get(vsize, bold=True)
-            while self._tw(draw, val, vf) > tw - 36 and vsize > 26:
+            while self._tw(draw, val, vf) > tw - 40 and vsize > 28:
                 vsize -= 2
                 vf = self.fonts.get(vsize, bold=True)
             vtw = self._tw(draw, val, vf)
-            draw.text((tx + (tw - vtw) / 2, ty + 62), val, font=vf, fill=self.WHITE)
+            draw.text((tx + (tw - vtw) / 2, ty + 66), val, font=vf, fill=self.WHITE)
             # Label.
-            lf = self.fonts.get(22, bold=True)
+            lf = self.fonts.get(24, bold=True)
             label = str(tile.get('label', ''))
             ltw = self._tw(draw, label, lf)
             draw.text((tx + (tw - ltw) / 2, ty + tile_h - 46), label, font=lf, fill=self.TILE_LABEL)
@@ -1674,15 +1654,15 @@ class InfographicGenerator:
         # Tips strip.
         if tips:
             sy = ty + tile_h + pad
-            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=14, fill=self.NAVY_LIGHT)
+            draw.rounded_rectangle([x + pad, sy, x + w - pad, sy + tips_h], radius=16, fill=self.NAVY_LIGHT)
             tip_text = '    •    '.join(tips)
-            tf = self.fonts.get(22)
+            tf = self.fonts.get(25, bold=True)
             # Trim tips that would overflow.
-            while self._tw(draw, tip_text, tf) > w - 2 * pad - 40 and '    •    ' in tip_text:
+            while self._tw(draw, tip_text, tf) > w - 2 * pad - 44 and '    •    ' in tip_text:
                 tips = tips[:-1]
                 tip_text = '    •    '.join(tips)
             ttw = self._tw(draw, tip_text, tf)
-            draw.text((x + (w - ttw) / 2, sy + (tips_h - 26) / 2), tip_text, font=tf, fill=(214, 224, 235))
+            draw.text((x + (w - ttw) / 2, sy + (tips_h - 29) / 2), tip_text, font=tf, fill=(220, 230, 240))
 
         return y + card_h
 
@@ -1710,11 +1690,15 @@ class InfographicGenerator:
         scratch = Image.new('RGB', (10, 10))
         sdraw = ImageDraw.Draw(scratch)
         body_w = self.W - 2 * self.MARGIN
-        bullet_indent = 46
-        bullet_size = 28
-        line_h = 42
-        bullet_gap = 22
+        bullet_indent = 50
+        bullet_size = 34
+        line_h = 46
+        bullet_gap = 20
 
+        # Keep the bullet block compact (cap to 5) so the image stays
+        # width-constrained in the PDF and the text renders large rather than
+        # being shrunk to fit the page height.
+        bullets = bullets[:5]
         wrapped_bullets = []
         bullets_h = 0
         for b in bullets:
@@ -1724,17 +1708,17 @@ class InfographicGenerator:
 
         # Resolve title font up front so the layout can reserve the right height.
         title = f"Executive Report: {theme['name']}"
-        tf, tsize = self._fit_font(sdraw, title, self.W - 2 * self.MARGIN, 54, bold=True, min_size=30)
+        tf, tsize = self._fit_font(sdraw, title, self.W - 2 * self.MARGIN, 56, bold=True, min_size=32)
 
         # Compute total canvas height.
-        top = 64
+        top = 56
         title_h = tsize + 16
-        subtitle_h = 50
-        card_top = top + title_h + subtitle_h + 16
+        subtitle_h = 48
+        card_top = top + title_h + subtitle_h + 14
         card_h = self._card_height(bool(analysis.get('safety_guidance')))
-        bullets_top = card_top + card_h + 48
-        section_label_h = 52
-        total_h = int(bullets_top + section_label_h + bullets_h + 70)
+        bullets_top = card_top + card_h + 40
+        section_label_h = 54
+        total_h = int(bullets_top + section_label_h + bullets_h + 56)
 
         img = Image.new('RGB', (self.W, total_h), self.WHITE)
         draw = ImageDraw.Draw(img)
@@ -1744,7 +1728,7 @@ class InfographicGenerator:
         draw.text(((self.W - ttw) / 2, top), title, font=tf, fill=self.INK)
         sub = (f"{county} County ({analysis['city']}), TX — "
                f"{HZ.fmt_time(timestamp, '%A, %B %-d, %Y')}")
-        sf = self.fonts.get(26)
+        sf = self.fonts.get(30)
         stw = self._tw(draw, sub, sf)
         draw.text(((self.W - stw) / 2, top + title_h), sub, font=sf, fill=self.GRAY)
 
@@ -1756,13 +1740,13 @@ class InfographicGenerator:
 
         # Bullet section.
         by = bullets_top
-        slf = self.fonts.get(32, bold=True)
+        slf = self.fonts.get(40, bold=True)
         draw.text((self.MARGIN, by), "Key Points", font=slf, fill=self.INK)
-        draw.rectangle([self.MARGIN, by + 46, self.MARGIN + 160, by + 52], fill=banner_color)
+        draw.rectangle([self.MARGIN, by + 56, self.MARGIN + 190, by + 63], fill=banner_color)
         by += section_label_h
 
         for lines in wrapped_bullets:
-            draw.ellipse([self.MARGIN + 6, by + 12, self.MARGIN + 20, by + 26], fill=banner_color)
+            draw.ellipse([self.MARGIN + 6, by + 14, self.MARGIN + 24, by + 32], fill=banner_color)
             for line in lines:
                 self._draw_line(draw, self.MARGIN + bullet_indent, by, line, bullet_size, self.INK)
                 by += line_h
@@ -1779,54 +1763,47 @@ class InfographicGenerator:
         m = a.get('metrics', {})
         bullets: List[str] = []
 
-        # Lead bullet: dominant hazard + risk level.
+        # Bullets are intentionally short (ideally one line each) so the image
+        # stays compact and the text renders large on the PDF page.
+
+        # Lead: dominant hazard + risk level.
         bullets.append(
-            f"**{a['dominant_hazard_name']}** is the primary threat for **{a['county']} County**, "
-            f"currently assessed at **{a['risk_level']}** likelihood of operational impacts."
-        )
+            f"Primary threat: **{a['dominant_hazard_name']}** — **{a['county']} County** at "
+            f"**{a['risk_level']}** likelihood of operational impacts.")
 
         # Active alerts.
         if a['alerts']:
             names = ', '.join(sorted({al['event'] for al in a['alerts']}))
-            bullets.append(f"Active National Weather Service products: **{names}**.")
+            bullets.append(f"Active alert(s): **{names}**.")
         else:
-            bullets.append("**No active NWS warnings**; assessment driven by forecast conditions.")
+            bullets.append("**No active NWS warnings** — forecast-driven assessment.")
 
-        # Hazard-specific quantitative bullet.
+        # Hazard-specific quantitative bullet (concise).
         if a['dominant_hazard'] == 'extreme_heat' and m.get('max_heat_index_f'):
             flag = m.get('flag_condition')
-            flag_txt = f" reaching **{flag['flag']} flag** conditions" if flag else ""
+            flag_txt = f"; **{flag['flag']} flag** conditions" if flag else ""
             bullets.append(
-                f"Heat index expected to peak near **{int(m['max_heat_index_f'])}°F** with a forecast "
-                f"high of **{int(m['max_temp_f'])}°F**{flag_txt}."
-            )
+                f"Heat index to **{int(m['max_heat_index_f'])}°F** (high "
+                f"**{int(m['max_temp_f'])}°F**){flag_txt}.")
         elif a['dominant_hazard'] == 'extreme_cold' and m.get('min_wind_chill_f') is not None:
             bullets.append(
-                f"Wind chills as low as **{int(m['min_wind_chill_f'])}°F** with overnight lows near "
-                f"**{int(m['min_temp_f'])}°F**."
-            )
+                f"Wind chill to **{int(m['min_wind_chill_f'])}°F** (low "
+                f"**{int(m['min_temp_f'])}°F**).")
         elif a['dominant_hazard'] == 'fire_weather' and m.get('min_rh') is not None:
             bullets.append(
-                f"**Critical fire weather**: relative humidity dropping to **{int(m['min_rh'])}%** "
-                f"with gusty winds elevating rapid wildfire spread potential."
-            )
+                f"**Critical fire weather**: humidity to **{int(m['min_rh'])}%** with gusty winds.")
         elif a['dominant_hazard'] in ('severe_storm', 'tropical', 'wind') and m.get('max_wind_gust_mph'):
-            bullets.append(f"Peak wind gusts near **{int(m['max_wind_gust_mph'])} mph** anticipated.")
+            bullets.append(f"Peak wind gusts to **{int(m['max_wind_gust_mph'])} mph**.")
 
         # Timeline.
         if a['timeline'].get('narrative'):
             bullets.append(f"**Timeline:** {a['timeline']['narrative']}.")
 
-        # Top infrastructure impacts.
+        # Top infrastructure impacts (public safety + utilities only here).
         impacts = a['infrastructure_impacts']
-        for key, label in (('public_safety', 'Public safety'), ('utilities', 'Utilities'),
-                           ('transportation', 'Transportation')):
+        for key, label in (('public_safety', 'Public safety'), ('utilities', 'Utilities')):
             if impacts.get(key):
                 bullets.append(f"**{label}:** {impacts[key][0]}.")
-
-        # Coastal tropical watch note.
-        if a.get('coastal_tropical_watch'):
-            bullets.append("**Coastal tropical watch:** active system(s) in the basin warrant monitoring for this coastal county.")
 
         return bullets
 
@@ -1868,45 +1845,46 @@ def _md_bold(text: str) -> str:
 
 # Season-aware risk framework. Levels reflect the likelihood of impacts to
 # building/facility operations, weighted for Texas conditions and the season.
+# Season-aware risk framework. Each tier is defined by the likelihood of impact
+# to building/facility operations, followed by the events that automatically land
+# at that tier this season. Levels reflect Texas operational context.
 def risk_framework(season: str) -> Dict:
-    common = {
-        'High': 'Flooding, tropical systems, tornadoes, and severe thunderstorms — '
-                'events that commonly force facility closures, structural damage, or evacuations.',
-        'Moderate': 'Extreme heat. Significant potential impact, but a lower likelihood of '
-                    'disrupting climate-controlled operations given regional acclimatization; '
-                    'elevated mainly if power-grid reliability is threatened.',
-        'Medium': 'High wind, fire weather (Red Flag), and air-quality concerns with localized '
-                  'or indirect operational effects.',
+    defs = {
+        'High': 'Events with a higher likelihood of forcing facility closures, structural '
+                'damage, evacuations, or personnel hazards',
+        'Moderate': 'Events with a moderate likelihood of disrupting operations or creating '
+                    'personnel hazards',
+        'Medium': 'Events with a lower, typically localized likelihood of operational impact',
         'Low': 'Routine seasonal conditions with minimal anticipated impact to operations.',
-        'note': 'Note: any unseasonable freeze or icing event would be elevated to High given '
-                'Texas’s limited cold-weather infrastructure and rare exposure.',
     }
-    if season == 'Winter':
-        return {
-            'High': 'Ice, freezing rain, and hard freezes — even brief or minor events — given '
-                    'Texas’s limited cold-weather infrastructure and rare exposure; also '
-                    'flooding and severe storms.',
-            'Moderate': 'Prolonged cold without precipitation, or high-wind events.',
-            'Medium': 'Marginal cold, fog, or air-quality concerns with limited operational effect.',
-            'Low': 'Routine winter conditions with minimal anticipated impact to operations.',
-            'note': 'Note: extreme heat is treated as a lower-likelihood operational threat and is '
-                    'capped at Moderate.',
-        }
-    if season == 'Spring':
-        return {
-            'High': 'Tornadoes, severe thunderstorms, large hail, and flooding — the dominant '
-                    'spring threats — which commonly force closures or damage.',
-            'Moderate': 'Early-season extreme heat and high-wind events.',
-            'Medium': 'Fire weather (Red Flag), fog, and air-quality concerns.',
-            'Low': 'Routine spring conditions with minimal anticipated impact to operations.',
-            'note': common['note'],
-        }
-    if season == 'Fall':
-        c = dict(common)
-        c['High'] = ('Tropical systems, flooding, tornadoes, and severe thunderstorms — events '
-                     'that commonly force facility closures, damage, or evacuations.')
-        return c
-    return common  # Summer
+    events = {
+        'Summer': {
+            'High': ['Flooding', 'Hurricanes', 'Tropical Systems', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Heat Advisories', 'Dense Fog', 'Blowing Dust', 'Air Quality'],
+        },
+        'Winter': {
+            'High': ['Ice Storms', 'Freezing Rain', 'Hard Freezes', 'Flooding', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extended Cold', 'High Wind', 'Winter Weather Advisories'],
+            'Medium': ['Dense Fog', 'Frost', 'Air Quality'],
+        },
+        'Spring': {
+            'High': ['Tornadoes', 'Severe Thunderstorms', 'Large Hail', 'Flooding'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Dense Fog', 'Blowing Dust', 'Air Quality'],
+        },
+        'Fall': {
+            'High': ['Tropical Systems', 'Hurricanes', 'Flooding', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Dense Fog', 'Air Quality'],
+        },
+    }
+    season_events = events.get(season, events['Summer'])
+    out = {}
+    for level in ('High', 'Moderate', 'Medium'):
+        out[level] = f"{defs[level]} — {', '.join(season_events[level])}, etc."
+    out['Low'] = defs['Low']
+    return out
 
 
 def _fmt_alert_dt(iso: str) -> Optional[str]:
@@ -2055,7 +2033,6 @@ class PDFReportGenerator:
             lvl_style = ParagraphStyle('FW', parent=self.body_style,
                                        textColor=self.get_risk_color(level))
             story.append(Paragraph(f"<b>{level}:</b> {fw[level]}", lvl_style))
-        story.append(Paragraph(f"<i>{fw['note']}</i>", self.body_style))
 
         # ---- Detailed county analysis: each county starts on a NEW page -------
         for a in analyses:

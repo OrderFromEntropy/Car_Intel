@@ -61,37 +61,14 @@ class NarrativeGenerationAgent:
     # ------------------------------------------------------ executive summary
     def generate_executive_summary(self, analyses: List[Dict], season: str,
                                    tropical_systems: List[Dict]) -> List[str]:
-        """Return a list of quick-hitting bullet strings (with **bold** markup)."""
-        print("Generating executive summary...")
-        if self.llm_available:
-            try:
-                risk_dist = {'High': [], 'Moderate': [], 'Medium': [], 'Low': []}
-                for a in analyses:
-                    risk_dist[a['risk_level']].append(a['county'])
-                input_data = {
-                    'season': season,
-                    'risk_distribution': risk_dist,
-                    'counties': [{'county': a['county'], 'city': a['city'],
-                                  'risk_level': a['risk_level'],
-                                  'dominant_hazard': a['dominant_hazard_name']} for a in analyses],
-                    'active_tropical_systems': [s['name'] for s in tropical_systems] if tropical_systems else [],
-                }
-                raw = self.call_llm(PROMPT_EXECUTIVE_SUMMARY, json.dumps(input_data, indent=2))
-                bullets = self._parse_bullet_lines(raw)
-                if len(bullets) >= 2:
-                    return bullets
-            except Exception as e:
-                print(f"LLM call failed: {e}; using template")
-        return self._template_summary(analyses, season, tropical_systems)
+        """
+        Return a list of quick-hitting bullet strings (with **bold** markup).
 
-    @staticmethod
-    def _parse_bullet_lines(raw: str) -> List[str]:
-        bullets = []
-        for line in raw.splitlines():
-            line = line.strip().lstrip('-*•').strip()
-            if line:
-                bullets.append(line)
-        return bullets
+        Built deterministically (not via the LLM) so that every county is
+        guaranteed its own bullet line.
+        """
+        print("Generating executive summary...")
+        return self._template_summary(analyses, season, tropical_systems)
 
     def _template_summary(self, analyses: List[Dict], season: str,
                           tropical_systems: List[Dict]) -> List[str]:
@@ -128,9 +105,12 @@ class NarrativeGenerationAgent:
             names = ', '.join(s['name'] for s in tropical_systems)
             bullets.append(f"**Active tropical system(s):** {names} — coastal exposure under heightened monitoring.")
 
-        # One bullet per county with a notable threat (scales the summary length).
-        notable = [a for a in analyses if a['risk_level'] != 'Low' or a['active_alerts']]
-        for a in notable:
+        # One bullet PER county (each on its own line), highest severity first.
+        for a in analyses:
+            if a['risk_level'] == 'Low' and not a['active_alerts']:
+                bullets.append(
+                    f"**{a['county']} ({a['city']})**: **Low** — no significant hazards; monitoring conditions.")
+                continue
             metric = self._metric_tag(a)
             bullets.append(
                 f"**{a['county']} ({a['city']})**: **{a['risk_level']}** — {a['dominant_hazard_name']}"

@@ -33,45 +33,46 @@ def _md_bold(text: str) -> str:
 
 # Season-aware risk framework. Levels reflect the likelihood of impacts to
 # building/facility operations, weighted for Texas conditions and the season.
+# Season-aware risk framework. Each tier is defined by the likelihood of impact
+# to building/facility operations, followed by the events that automatically land
+# at that tier this season. Levels reflect Texas operational context.
 def risk_framework(season: str) -> Dict:
-    common = {
-        'High': 'Flooding, tropical systems, tornadoes, and severe thunderstorms — '
-                'events that commonly force facility closures, structural damage, or evacuations.',
-        'Moderate': 'Extreme heat. Significant potential impact, but a lower likelihood of '
-                    'disrupting climate-controlled operations given regional acclimatization; '
-                    'elevated mainly if power-grid reliability is threatened.',
-        'Medium': 'High wind, fire weather (Red Flag), and air-quality concerns with localized '
-                  'or indirect operational effects.',
+    defs = {
+        'High': 'Events with a higher likelihood of forcing facility closures, structural '
+                'damage, evacuations, or personnel hazards',
+        'Moderate': 'Events with a moderate likelihood of disrupting operations or creating '
+                    'personnel hazards',
+        'Medium': 'Events with a lower, typically localized likelihood of operational impact',
         'Low': 'Routine seasonal conditions with minimal anticipated impact to operations.',
-        'note': 'Note: any unseasonable freeze or icing event would be elevated to High given '
-                'Texas’s limited cold-weather infrastructure and rare exposure.',
     }
-    if season == 'Winter':
-        return {
-            'High': 'Ice, freezing rain, and hard freezes — even brief or minor events — given '
-                    'Texas’s limited cold-weather infrastructure and rare exposure; also '
-                    'flooding and severe storms.',
-            'Moderate': 'Prolonged cold without precipitation, or high-wind events.',
-            'Medium': 'Marginal cold, fog, or air-quality concerns with limited operational effect.',
-            'Low': 'Routine winter conditions with minimal anticipated impact to operations.',
-            'note': 'Note: extreme heat is treated as a lower-likelihood operational threat and is '
-                    'capped at Moderate.',
-        }
-    if season == 'Spring':
-        return {
-            'High': 'Tornadoes, severe thunderstorms, large hail, and flooding — the dominant '
-                    'spring threats — which commonly force closures or damage.',
-            'Moderate': 'Early-season extreme heat and high-wind events.',
-            'Medium': 'Fire weather (Red Flag), fog, and air-quality concerns.',
-            'Low': 'Routine spring conditions with minimal anticipated impact to operations.',
-            'note': common['note'],
-        }
-    if season == 'Fall':
-        c = dict(common)
-        c['High'] = ('Tropical systems, flooding, tornadoes, and severe thunderstorms — events '
-                     'that commonly force facility closures, damage, or evacuations.')
-        return c
-    return common  # Summer
+    events = {
+        'Summer': {
+            'High': ['Flooding', 'Hurricanes', 'Tropical Systems', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Heat Advisories', 'Dense Fog', 'Blowing Dust', 'Air Quality'],
+        },
+        'Winter': {
+            'High': ['Ice Storms', 'Freezing Rain', 'Hard Freezes', 'Flooding', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extended Cold', 'High Wind', 'Winter Weather Advisories'],
+            'Medium': ['Dense Fog', 'Frost', 'Air Quality'],
+        },
+        'Spring': {
+            'High': ['Tornadoes', 'Severe Thunderstorms', 'Large Hail', 'Flooding'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Dense Fog', 'Blowing Dust', 'Air Quality'],
+        },
+        'Fall': {
+            'High': ['Tropical Systems', 'Hurricanes', 'Flooding', 'Severe Thunderstorms', 'Tornadoes'],
+            'Moderate': ['Extreme Heat', 'High Wind', 'Fire Weather (Red Flag)'],
+            'Medium': ['Dense Fog', 'Air Quality'],
+        },
+    }
+    season_events = events.get(season, events['Summer'])
+    out = {}
+    for level in ('High', 'Moderate', 'Medium'):
+        out[level] = f"{defs[level]} — {', '.join(season_events[level])}, etc."
+    out['Low'] = defs['Low']
+    return out
 
 
 def _fmt_alert_dt(iso: str) -> Optional[str]:
@@ -220,7 +221,6 @@ class PDFReportGenerator:
             lvl_style = ParagraphStyle('FW', parent=self.body_style,
                                        textColor=self.get_risk_color(level))
             story.append(Paragraph(f"<b>{level}:</b> {fw[level]}", lvl_style))
-        story.append(Paragraph(f"<i>{fw['note']}</i>", self.body_style))
 
         # ---- Detailed county analysis: each county starts on a NEW page -------
         for a in analyses:
