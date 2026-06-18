@@ -609,10 +609,15 @@ def clamp_level(level: str, floor: Optional[str] = None, cap: Optional[str] = No
 
 
 def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
-                          has_warning: bool, freeze_signal: bool = False) -> str:
+                          has_warning: bool, freeze_signal: bool = False,
+                          heat_stress_extreme: bool = False) -> str:
     """
     Adjust a score-derived risk level to reflect the likelihood of operational
     (building/facility) impact in Texas, given the dominant hazard.
+
+    `heat_stress_extreme` is True when an estimated WBGT activity flag of Red or
+    Black is present, indicating dangerous heat regardless of humidity-based
+    heat index or whether a formal alert was issued (e.g. dry desert heat).
     """
     # High-impact disruptive events: flooding, tropical, severe storms/tornado.
     if dominant in ('flood', 'tropical', 'severe_storm'):
@@ -633,8 +638,15 @@ def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
         return clamp_level(base_level, floor=floor, cap='High')
 
     # Extreme heat: significant but lower likelihood of disrupting indoor ops.
+    # Dangerous heat stress (Red/Black flag) or an active alert both floor the
+    # level so genuinely hot counties grade consistently, capped at Moderate.
     if dominant == 'extreme_heat':
-        floor = 'Medium' if has_alert else None
+        if heat_stress_extreme:
+            floor = 'Moderate'
+        elif has_alert:
+            floor = 'Medium'
+        else:
+            floor = None
         return clamp_level(base_level, floor=floor, cap='Moderate')
 
     # Fire weather: mostly indirect impact to building operations.
@@ -720,31 +732,58 @@ class WeatherDataAgent:
         self.session.headers.update({'User-Agent': API_CONFIG['user_agent']})
 
     # ------------------------------------------------------------------ alerts
+    @staticmethod
+    def _parse_alert(feature: Dict) -> Dict:
+        p = feature.get('properties', {})
+        return {
+            'event': p.get('event', 'Unknown'),
+            'severity': p.get('severity', 'Unknown'),
+            'urgency': p.get('urgency', 'Unknown'),
+            'certainty': p.get('certainty', 'Unknown'),
+            'headline': p.get('headline', ''),
+            'description': p.get('description', ''),
+            'instruction': p.get('instruction', '') or '',
+            'onset': p.get('onset', ''),
+            'expires': p.get('expires', ''),
+        }
+
     def fetch_nws_alerts(self, county_name: str) -> Dict:
+        """
+        Fetch active alerts for a county.
+
+        Queries BOTH the county alert zone and the county centroid point, then
+        merges/dedupes. Heat and other zone-based products are sometimes carried
+        on forecast (TXZ) zones rather than the county (TXC) zone; the point
+        query catches anything affecting the location regardless of zone type,
+        so dry-heat or zone-issued alerts are not missed.
+        """
         print(f"Fetching NWS alerts for {county_name}...")
-        zone = county_alert_zone(self.counties[county_name]['fips'])
-        url = f"{API_CONFIG['nws_base_url']}/alerts/active/zone/{zone}"
-        try:
-            resp = self.session.get(url, timeout=API_CONFIG['timeout_seconds'])
-            if resp.status_code == 200:
-                alerts = []
-                for feature in resp.json().get('features', []):
-                    p = feature.get('properties', {})
-                    alerts.append({
-                        'event': p.get('event', 'Unknown'),
-                        'severity': p.get('severity', 'Unknown'),
-                        'urgency': p.get('urgency', 'Unknown'),
-                        'certainty': p.get('certainty', 'Unknown'),
-                        'headline': p.get('headline', ''),
-                        'description': p.get('description', ''),
-                        'instruction': p.get('instruction', '') or '',
-                        'onset': p.get('onset', ''),
-                        'expires': p.get('expires', ''),
-                    })
-                return {'source': 'NWS', 'county': county_name, 'alerts': alerts, 'status': 'success'}
-            return self._err('NWS', county_name, 'alerts', f'HTTP {resp.status_code}')
-        except Exception as e:
-            return self._err('NWS', county_name, 'alerts', str(e))
+        cfg = self.counties[county_name]
+        zone = county_alert_zone(cfg['fips'])
+        base = API_CONFIG['nws_base_url']
+        urls = [
+            f"{base}/alerts/active/zone/{zone}",
+            f"{base}/alerts/active?point={cfg['lat']},{cfg['lon']}",
+        ]
+        merged: Dict[tuple, Dict] = {}
+        any_ok = False
+        last_err = None
+        for url in urls:
+            try:
+                resp = self.session.get(url, timeout=API_CONFIG['timeout_seconds'])
+                if resp.status_code == 200:
+                    any_ok = True
+                    for feature in resp.json().get('features', []):
+                        a = self._parse_alert(feature)
+                        merged.setdefault((a['event'], a['onset'], a['expires']), a)
+                else:
+                    last_err = f'HTTP {resp.status_code}'
+            except Exception as e:
+                last_err = str(e)
+        if any_ok:
+            return {'source': 'NWS', 'county': county_name,
+                    'alerts': list(merged.values()), 'status': 'success'}
+        return self._err('NWS', county_name, 'alerts', last_err or 'unknown error')
 
     # --------------------------------------------------------------- forecast
     def fetch_nws_forecast(self, county_name: str) -> Dict:
@@ -981,6 +1020,13 @@ class RiskAnalysisAgent:
             if hi >= 113: score += 30
             elif hi >= 105: score += 20
             elif hi >= 100: score += 12
+        # Air temperature also drives heat danger, especially in dry climates
+        # (e.g. far-west Texas) where the humidity-based heat index stays low.
+        t = metrics.get('max_temp_f')
+        if t is not None:
+            if t >= 105: score += 22
+            elif t >= 100: score += 14
+            elif t >= 95: score += 6
         wc = metrics.get('min_wind_chill_f')
         if wc is not None:
             if wc <= 0: score += 30
@@ -1003,9 +1049,10 @@ class RiskAnalysisAgent:
         """Compute heat index, WBGT flag, wind chill and temp extremes."""
         metrics = dict(grid) if grid else {}
 
-        # If grid heat index missing, estimate from peak temp + min humidity.
+        # If grid heat index missing, estimate from peak temp + the concurrent
+        # (daytime minimum) humidity, which is what occurs at peak heat.
         if metrics.get('max_heat_index_f') is None and metrics.get('max_temp_f') is not None:
-            rh = metrics.get('max_rh') or 50
+            rh = metrics.get('min_rh') or metrics.get('max_rh') or 50
             metrics['max_heat_index_f'] = HZ.heat_index_f(metrics['max_temp_f'], rh)
 
         # Fallback temp extremes from narrative periods.
@@ -1018,9 +1065,11 @@ class RiskAnalysisAgent:
             if lows:
                 metrics['min_temp_f'] = min(lows)
 
-        # WBGT-based activity flag from peak temp + humidity.
+        # WBGT-based activity flag from peak temp paired with the concurrent
+        # (daytime minimum) humidity — peak heat coincides with the day's lowest
+        # humidity, so this avoids overstating WBGT in dry climates.
         if metrics.get('max_temp_f') is not None:
-            rh = metrics.get('max_rh') or metrics.get('min_rh') or 50
+            rh = metrics.get('min_rh') or metrics.get('max_rh') or 50
             metrics['wbgt_f'] = HZ.estimate_wbgt_f(metrics['max_temp_f'], rh, in_sun=True)
             metrics['flag_condition'] = HZ.flag_condition(metrics['wbgt_f'])
         return metrics
@@ -1040,10 +1089,15 @@ class RiskAnalysisAgent:
             w = HZ.category_display(cat)['weight'] * 0.4
             candidates[cat] = max(candidates.get(cat, 0), w)
 
-        # Metric-driven candidates with no alert.
+        # Metric-driven candidates with no alert. High air temperature or heat
+        # index makes heat the dominant hazard even in dry climates where no
+        # formal alert or humidity-based flag is present.
         flag = metrics.get('flag_condition')
         if flag and flag['flag'] in ('Black', 'Red', 'Yellow'):
             candidates['extreme_heat'] = max(candidates.get('extreme_heat', 0), 40)
+        if (metrics.get('max_temp_f') is not None and metrics['max_temp_f'] >= 100) or \
+           (metrics.get('max_heat_index_f') is not None and metrics['max_heat_index_f'] >= 100):
+            candidates['extreme_heat'] = max(candidates.get('extreme_heat', 0), 45)
         if metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 20:
             candidates['extreme_cold'] = max(candidates.get('extreme_cold', 0), 40)
 
@@ -1207,7 +1261,17 @@ class RiskAnalysisAgent:
             (metrics.get('min_temp_f') is not None and metrics['min_temp_f'] <= 32) or
             (metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 32) or
             any(w in low_text for w in ('freeze', 'freezing', 'ice', 'sleet', 'snow', 'wintry')))
-        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning, freeze_signal)
+        # Treat a genuine heat event uniformly: a Red/Black activity flag, an air
+        # temperature or heat index of 100°F+, or an active heat alert all floor
+        # the heat risk at Moderate so hot counties grade consistently — whether
+        # the heat is humid (high heat index) or dry (high air temperature).
+        flag = metrics.get('flag_condition')
+        heat_stress_extreme = bool(
+            (flag and flag.get('flag') in ('Black', 'Red')) or
+            (metrics.get('max_temp_f') is not None and metrics['max_temp_f'] >= 100) or
+            (metrics.get('max_heat_index_f') is not None and metrics['max_heat_index_f'] >= 100))
+        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning,
+                                              freeze_signal, heat_stress_extreme)
         risk_desc = self.risk_thresholds[risk_level]['description']
         infrastructure = self.analyze_infrastructure_impacts(dominant, all_text, metrics)
         timeline = self.extract_timeline(forecasts, alerts)

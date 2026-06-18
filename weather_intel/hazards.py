@@ -409,10 +409,15 @@ def clamp_level(level: str, floor: Optional[str] = None, cap: Optional[str] = No
 
 
 def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
-                          has_warning: bool, freeze_signal: bool = False) -> str:
+                          has_warning: bool, freeze_signal: bool = False,
+                          heat_stress_extreme: bool = False) -> str:
     """
     Adjust a score-derived risk level to reflect the likelihood of operational
     (building/facility) impact in Texas, given the dominant hazard.
+
+    `heat_stress_extreme` is True when an estimated WBGT activity flag of Red or
+    Black is present, indicating dangerous heat regardless of humidity-based
+    heat index or whether a formal alert was issued (e.g. dry desert heat).
     """
     # High-impact disruptive events: flooding, tropical, severe storms/tornado.
     if dominant in ('flood', 'tropical', 'severe_storm'):
@@ -433,8 +438,15 @@ def contextual_risk_level(dominant: str, base_level: str, has_alert: bool,
         return clamp_level(base_level, floor=floor, cap='High')
 
     # Extreme heat: significant but lower likelihood of disrupting indoor ops.
+    # Dangerous heat stress (Red/Black flag) or an active alert both floor the
+    # level so genuinely hot counties grade consistently, capped at Moderate.
     if dominant == 'extreme_heat':
-        floor = 'Medium' if has_alert else None
+        if heat_stress_extreme:
+            floor = 'Moderate'
+        elif has_alert:
+            floor = 'Medium'
+        else:
+            floor = None
         return clamp_level(base_level, floor=floor, cap='Moderate')
 
     # Fire weather: mostly indirect impact to building operations.

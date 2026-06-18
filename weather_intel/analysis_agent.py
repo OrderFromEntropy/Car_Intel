@@ -80,6 +80,13 @@ class RiskAnalysisAgent:
             if hi >= 113: score += 30
             elif hi >= 105: score += 20
             elif hi >= 100: score += 12
+        # Air temperature also drives heat danger, especially in dry climates
+        # (e.g. far-west Texas) where the humidity-based heat index stays low.
+        t = metrics.get('max_temp_f')
+        if t is not None:
+            if t >= 105: score += 22
+            elif t >= 100: score += 14
+            elif t >= 95: score += 6
         wc = metrics.get('min_wind_chill_f')
         if wc is not None:
             if wc <= 0: score += 30
@@ -102,9 +109,10 @@ class RiskAnalysisAgent:
         """Compute heat index, WBGT flag, wind chill and temp extremes."""
         metrics = dict(grid) if grid else {}
 
-        # If grid heat index missing, estimate from peak temp + min humidity.
+        # If grid heat index missing, estimate from peak temp + the concurrent
+        # (daytime minimum) humidity, which is what occurs at peak heat.
         if metrics.get('max_heat_index_f') is None and metrics.get('max_temp_f') is not None:
-            rh = metrics.get('max_rh') or 50
+            rh = metrics.get('min_rh') or metrics.get('max_rh') or 50
             metrics['max_heat_index_f'] = HZ.heat_index_f(metrics['max_temp_f'], rh)
 
         # Fallback temp extremes from narrative periods.
@@ -117,9 +125,11 @@ class RiskAnalysisAgent:
             if lows:
                 metrics['min_temp_f'] = min(lows)
 
-        # WBGT-based activity flag from peak temp + humidity.
+        # WBGT-based activity flag from peak temp paired with the concurrent
+        # (daytime minimum) humidity — peak heat coincides with the day's lowest
+        # humidity, so this avoids overstating WBGT in dry climates.
         if metrics.get('max_temp_f') is not None:
-            rh = metrics.get('max_rh') or metrics.get('min_rh') or 50
+            rh = metrics.get('min_rh') or metrics.get('max_rh') or 50
             metrics['wbgt_f'] = HZ.estimate_wbgt_f(metrics['max_temp_f'], rh, in_sun=True)
             metrics['flag_condition'] = HZ.flag_condition(metrics['wbgt_f'])
         return metrics
@@ -139,10 +149,15 @@ class RiskAnalysisAgent:
             w = HZ.category_display(cat)['weight'] * 0.4
             candidates[cat] = max(candidates.get(cat, 0), w)
 
-        # Metric-driven candidates with no alert.
+        # Metric-driven candidates with no alert. High air temperature or heat
+        # index makes heat the dominant hazard even in dry climates where no
+        # formal alert or humidity-based flag is present.
         flag = metrics.get('flag_condition')
         if flag and flag['flag'] in ('Black', 'Red', 'Yellow'):
             candidates['extreme_heat'] = max(candidates.get('extreme_heat', 0), 40)
+        if (metrics.get('max_temp_f') is not None and metrics['max_temp_f'] >= 100) or \
+           (metrics.get('max_heat_index_f') is not None and metrics['max_heat_index_f'] >= 100):
+            candidates['extreme_heat'] = max(candidates.get('extreme_heat', 0), 45)
         if metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 20:
             candidates['extreme_cold'] = max(candidates.get('extreme_cold', 0), 40)
 
@@ -306,7 +321,17 @@ class RiskAnalysisAgent:
             (metrics.get('min_temp_f') is not None and metrics['min_temp_f'] <= 32) or
             (metrics.get('min_wind_chill_f') is not None and metrics['min_wind_chill_f'] <= 32) or
             any(w in low_text for w in ('freeze', 'freezing', 'ice', 'sleet', 'snow', 'wintry')))
-        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning, freeze_signal)
+        # Treat a genuine heat event uniformly: a Red/Black activity flag, an air
+        # temperature or heat index of 100°F+, or an active heat alert all floor
+        # the heat risk at Moderate so hot counties grade consistently — whether
+        # the heat is humid (high heat index) or dry (high air temperature).
+        flag = metrics.get('flag_condition')
+        heat_stress_extreme = bool(
+            (flag and flag.get('flag') in ('Black', 'Red')) or
+            (metrics.get('max_temp_f') is not None and metrics['max_temp_f'] >= 100) or
+            (metrics.get('max_heat_index_f') is not None and metrics['max_heat_index_f'] >= 100))
+        risk_level = HZ.contextual_risk_level(dominant, base_level, has_alert, has_warning,
+                                              freeze_signal, heat_stress_extreme)
         risk_desc = self.risk_thresholds[risk_level]['description']
         infrastructure = self.analyze_infrastructure_impacts(dominant, all_text, metrics)
         timeline = self.extract_timeline(forecasts, alerts)

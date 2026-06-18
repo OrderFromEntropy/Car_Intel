@@ -33,31 +33,58 @@ class WeatherDataAgent:
         self.session.headers.update({'User-Agent': API_CONFIG['user_agent']})
 
     # ------------------------------------------------------------------ alerts
+    @staticmethod
+    def _parse_alert(feature: Dict) -> Dict:
+        p = feature.get('properties', {})
+        return {
+            'event': p.get('event', 'Unknown'),
+            'severity': p.get('severity', 'Unknown'),
+            'urgency': p.get('urgency', 'Unknown'),
+            'certainty': p.get('certainty', 'Unknown'),
+            'headline': p.get('headline', ''),
+            'description': p.get('description', ''),
+            'instruction': p.get('instruction', '') or '',
+            'onset': p.get('onset', ''),
+            'expires': p.get('expires', ''),
+        }
+
     def fetch_nws_alerts(self, county_name: str) -> Dict:
+        """
+        Fetch active alerts for a county.
+
+        Queries BOTH the county alert zone and the county centroid point, then
+        merges/dedupes. Heat and other zone-based products are sometimes carried
+        on forecast (TXZ) zones rather than the county (TXC) zone; the point
+        query catches anything affecting the location regardless of zone type,
+        so dry-heat or zone-issued alerts are not missed.
+        """
         print(f"Fetching NWS alerts for {county_name}...")
-        zone = county_alert_zone(self.counties[county_name]['fips'])
-        url = f"{API_CONFIG['nws_base_url']}/alerts/active/zone/{zone}"
-        try:
-            resp = self.session.get(url, timeout=API_CONFIG['timeout_seconds'])
-            if resp.status_code == 200:
-                alerts = []
-                for feature in resp.json().get('features', []):
-                    p = feature.get('properties', {})
-                    alerts.append({
-                        'event': p.get('event', 'Unknown'),
-                        'severity': p.get('severity', 'Unknown'),
-                        'urgency': p.get('urgency', 'Unknown'),
-                        'certainty': p.get('certainty', 'Unknown'),
-                        'headline': p.get('headline', ''),
-                        'description': p.get('description', ''),
-                        'instruction': p.get('instruction', '') or '',
-                        'onset': p.get('onset', ''),
-                        'expires': p.get('expires', ''),
-                    })
-                return {'source': 'NWS', 'county': county_name, 'alerts': alerts, 'status': 'success'}
-            return self._err('NWS', county_name, 'alerts', f'HTTP {resp.status_code}')
-        except Exception as e:
-            return self._err('NWS', county_name, 'alerts', str(e))
+        cfg = self.counties[county_name]
+        zone = county_alert_zone(cfg['fips'])
+        base = API_CONFIG['nws_base_url']
+        urls = [
+            f"{base}/alerts/active/zone/{zone}",
+            f"{base}/alerts/active?point={cfg['lat']},{cfg['lon']}",
+        ]
+        merged: Dict[tuple, Dict] = {}
+        any_ok = False
+        last_err = None
+        for url in urls:
+            try:
+                resp = self.session.get(url, timeout=API_CONFIG['timeout_seconds'])
+                if resp.status_code == 200:
+                    any_ok = True
+                    for feature in resp.json().get('features', []):
+                        a = self._parse_alert(feature)
+                        merged.setdefault((a['event'], a['onset'], a['expires']), a)
+                else:
+                    last_err = f'HTTP {resp.status_code}'
+            except Exception as e:
+                last_err = str(e)
+        if any_ok:
+            return {'source': 'NWS', 'county': county_name,
+                    'alerts': list(merged.values()), 'status': 'success'}
+        return self._err('NWS', county_name, 'alerts', last_err or 'unknown error')
 
     # --------------------------------------------------------------- forecast
     def fetch_nws_forecast(self, county_name: str) -> Dict:
