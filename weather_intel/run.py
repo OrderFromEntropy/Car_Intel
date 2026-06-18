@@ -17,6 +17,7 @@ Requirements:
 import argparse
 
 from .orchestrator import WeatherRiskOrchestrator
+from .config import OUTPUT_DIR
 
 
 def main():
@@ -26,7 +27,8 @@ def main():
     parser.add_argument('--model', default='gemma3:27b', help='Ollama model name')
     parser.add_argument('--counties', nargs='*', default=None,
                         help='Limit infographics to these counties (default: highest-risk)')
-    parser.add_argument('--output', default='output', help='Output directory')
+    parser.add_argument('--output', default=OUTPUT_DIR,
+                        help=f'Output directory (default: {OUTPUT_DIR})')
     args = parser.parse_args()
 
     model = '__disabled__' if args.no_llm else args.model

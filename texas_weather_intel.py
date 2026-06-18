@@ -187,8 +187,11 @@ DISCLAIMER_TEXT = (
     "dissemination may compromise agency operations."
 )
 
-# Output directory for generated reports and infographics (local paths).
-OUTPUT_DIR = 'output'
+# Output directory for generated reports and infographics.
+# Default is a fixed Windows path so files always land in the same place
+# regardless of where the program is launched from. Override at runtime with
+# --output (e.g. python texas_weather_intel.py --output "D:\\Reports").
+OUTPUT_DIR = r'C:\Users\cfied\OneDrive\Documents\Texas Weather Reports'
 
 
 # ===========================================================================
@@ -2400,7 +2403,8 @@ def main():
     parser.add_argument('--model', default='gemma3:27b', help='Ollama model name')
     parser.add_argument('--counties', nargs='*', default=None,
                         help='Limit infographics to these counties (default: highest-risk)')
-    parser.add_argument('--output', default='output', help='Output directory')
+    parser.add_argument('--output', default=OUTPUT_DIR,
+                        help=f'Output directory (default: {OUTPUT_DIR})')
     args = parser.parse_args()
 
     model = '__disabled__' if args.no_llm else args.model

@@ -147,5 +147,8 @@ DISCLAIMER_TEXT = (
     "dissemination may compromise agency operations."
 )
 
-# Output directory for generated reports and infographics (local paths).
-OUTPUT_DIR = 'output'
+# Output directory for generated reports and infographics.
+# Default is a fixed Windows path so files always land in the same place
+# regardless of where the program is launched from. Override at runtime with
+# --output (e.g. python texas_weather_intel.py --output "D:\\Reports").
+OUTPUT_DIR = r'C:\Users\cfied\OneDrive\Documents\Texas Weather Reports'
